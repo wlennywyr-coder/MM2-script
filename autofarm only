@@ -1,0 +1,599 @@
+-- ============================================================================
+-- HARMONY HUB (AUTOFARM ONLY EDITION) - MADE BY HARMONY
+-- Version ultra-allégée : Uniquement l'Autofarm (Pure CFrame)
+-- ============================================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+pcall(function()
+    Workspace.FallenPartsDestroyHeight = 0 / 0
+end)
+
+-- ============================================================================
+-- COLOR PALETTE & SETTINGS
+-- ============================================================================
+local Theme = {
+    BgMain       = Color3.fromHex("#0D0F17"),
+    BgSidebar    = Color3.fromHex("#11141F"),
+    BgCard       = Color3.fromHex("#161A27"),
+    BgControl    = Color3.fromHex("#202638"),
+    Stroke       = Color3.fromHex("#262D42"),
+    Accent       = Color3.fromHex("#6366F1"),
+    AccentBright = Color3.fromHex("#818CF8"),
+    TextPrimary  = Color3.fromHex("#F8FAFC"),
+    TextMuted    = Color3.fromHex("#94A3B8")
+}
+
+local Settings = {
+    AutoFarmCoins = false,
+    AutoFarmEvents = false,
+    AvoidMurdererFarm = true,
+    AutoResetAfterFarm = false,
+    FarmSpeed = 25,
+    UnderMapDepth = -3.5
+}
+
+local CachedRoles = {}
+local CachedDeadPlayers = {}
+local CachedCoinContainer = nil
+local CachedBagIsFull = false
+local CollectedCoins = {}
+local SavedMapReturnCFrame = nil
+
+-- ============================================================================
+-- UTILITIES
+-- ============================================================================
+local function GetCharacter(player) return player and player.Character end
+local function GetRootPart(player) return player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") end
+local function GetHumanoid(player) return player and player.Character and player.Character:FindFirstChildOfClass("Humanoid") end
+local function HasItem(player, itemName)
+    if not player then return false end
+    local bp = player:FindFirstChild("Backpack")
+    local char = GetCharacter(player)
+    if bp and bp:FindFirstChild(itemName) then return true end
+    if char and char:FindFirstChild(itemName) then return true end
+    return false
+end
+
+local function IsPlayerInActiveMap(player)
+    local root = GetRootPart(player)
+    if not root or not CachedCoinContainer or not CachedCoinContainer.Parent then return false end
+    if CachedDeadPlayers[player.Name] then return false end
+
+    local refPos = nil
+    local firstCoin = CachedCoinContainer:FindFirstChildWhichIsA("BasePart", true)
+    if firstCoin then refPos = firstCoin.Position
+    elseif CachedCoinContainer.Parent:IsA("Model") and CachedCoinContainer.Parent.PrimaryPart then refPos = CachedCoinContainer.Parent.PrimaryPart.Position
+    else
+        local anyPart = CachedCoinContainer.Parent:FindFirstChildWhichIsA("BasePart", true)
+        if anyPart then refPos = anyPart.Position end
+    end
+    if not refPos then return false end
+    return (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(refPos.X, 0, refPos.Z)).Magnitude < 250
+end
+
+local function FindMurderer()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            if HasItem(p, "Knife") or CachedRoles[p.Name] == "Murderer" then
+                return p
+            end
+        end
+    end
+    return nil
+end
+
+local function ForceStandUpright()
+    local root = GetRootPart(LocalPlayer)
+    local hum = GetHumanoid(LocalPlayer)
+    local char = GetCharacter(LocalPlayer)
+    if root then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        local _, yYaw, _ = root.CFrame:ToEulerAnglesYXZ()
+        local lookFlat = root.CFrame.LookVector
+        if math.abs(lookFlat.Y) > 0.5 then
+            root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, yYaw, 0)
+        end
+    end
+    if hum then
+        hum.PlatformStand = false
+        if hum:GetState() == Enum.HumanoidStateType.PlatformStanding then hum:ChangeState(Enum.HumanoidStateType.GettingUp) end
+    end
+    if char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = true end
+        end
+    end
+end
+
+-- ============================================================================
+-- BACKGROUND CACHE SCANNER
+-- ============================================================================
+local function CheckIfBagFullUI()
+    local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pGui then return false end
+    for _, desc in ipairs(pGui:GetDescendants()) do
+        if desc:IsA("TextLabel") and desc.Visible then
+            local txt = string.lower(desc.Text)
+            if txt == "full" or txt == "full!" or string.find(txt, "bag full") then return true end
+            local cur, max = string.match(txt, "^(%d+)%s*/%s*(%d+)$")
+            if cur and max then
+                local nCur, nMax = tonumber(cur), tonumber(max)
+                if nCur and nMax and nMax >= 10 and nCur >= nMax then return true end
+            end
+        end
+    end
+    return false
+end
+
+task.spawn(function()
+    while task.wait(0.25) do
+        local foundContainer = Workspace:FindFirstChild("CoinContainer", true)
+        if foundContainer ~= CachedCoinContainer then
+            table.clear(CollectedCoins)
+            SavedMapReturnCFrame = nil
+        end
+        CachedCoinContainer = foundContainer
+
+        local newRoles = {}
+        local newDead = {}
+        pcall(function()
+            local getPlayerData = ReplicatedStorage:FindFirstChild("GetPlayerData", true)
+            if getPlayerData and getPlayerData:IsA("RemoteFunction") then
+                local data = getPlayerData:InvokeServer()
+                if type(data) == "table" then
+                    for playerName, info in pairs(data) do
+                        if type(info) == "table" then
+                            if info.Dead or info.Killed then newDead[playerName] = true end
+                            if info.Role and info.Role ~= "" and not info.Dead and not info.Killed then
+                                newRoles[playerName] = info.Role
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+        
+        for _, p in ipairs(Players:GetPlayers()) do
+            if HasItem(p, "Knife") then newRoles[p.Name] = "Murderer" newDead[p.Name] = nil
+            elseif HasItem(p, "Gun") or HasItem(p, "Revolver") then newRoles[p.Name] = "Sheriff" newDead[p.Name] = nil end
+        end
+
+        CachedRoles = newRoles
+        CachedDeadPlayers = newDead
+
+        CachedBagIsFull = IsPlayerInActiveMap(LocalPlayer) and CheckIfBagFullUI()
+        if CachedBagIsFull and Settings.AutoResetAfterFarm then
+            ForceStandUpright()
+            local char = GetCharacter(LocalPlayer)
+            if char then char:BreakJoints() end
+        end
+    end
+end)
+
+-- ============================================================================
+-- GUI BUILDER
+-- ============================================================================
+local OldGui = CoreGui:FindFirstChild("HarmonyObsidianMM2") or (LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("HarmonyObsidianMM2"))
+if OldGui then OldGui:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "HarmonyObsidianMM2"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+local ok = pcall(function() ScreenGui.Parent = CoreGui end)
+if not ok then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+local FloatingIcon = Instance.new("TextButton", ScreenGui)
+FloatingIcon.Name = "HYFloatingIcon"
+FloatingIcon.Size = UDim2.new(0, 50, 0, 50)
+FloatingIcon.Position = UDim2.new(0.05, 0, 0.2, 0)
+FloatingIcon.BackgroundColor3 = Theme.BgSidebar
+FloatingIcon.Text = "HY"
+FloatingIcon.Font = Enum.Font.GothamBlack
+FloatingIcon.TextSize = 18
+FloatingIcon.TextColor3 = Theme.AccentBright
+FloatingIcon.AutoButtonColor = false
+FloatingIcon.Visible = false
+Instance.new("UICorner", FloatingIcon).CornerRadius = UDim.new(0, 12)
+Instance.new("UIStroke", FloatingIcon).Color = Theme.Accent
+FloatingIcon.UIStroke.Thickness = 2
+
+local MainWindow = Instance.new("Frame", ScreenGui)
+MainWindow.Name = "MainWindow"
+MainWindow.Size = UDim2.new(0, 500, 0, 320)
+MainWindow.Position = UDim2.new(0.5, -250, 0.5, -160)
+MainWindow.BackgroundColor3 = Theme.BgMain
+MainWindow.BorderSizePixel = 0
+MainWindow.ClipsDescendants = true
+Instance.new("UICorner", MainWindow).CornerRadius = UDim.new(0, 12)
+local WinStroke = Instance.new("UIStroke", MainWindow)
+WinStroke.Color = Theme.Stroke
+WinStroke.Thickness = 1.5
+
+local Sidebar = Instance.new("Frame", MainWindow)
+Sidebar.Size = UDim2.new(0, 160, 1, 0)
+Sidebar.BackgroundColor3 = Theme.BgSidebar
+Sidebar.BorderSizePixel = 0
+Instance.new("UICorner", Sidebar).CornerRadius = UDim.new(0, 12)
+
+local BrandTitle = Instance.new("TextLabel", Sidebar)
+BrandTitle.Size = UDim2.new(1, -20, 0, 24)
+BrandTitle.Position = UDim2.new(0, 12, 0, 16)
+BrandTitle.BackgroundTransparency = 1
+BrandTitle.Text = "HARMONY HUB"
+BrandTitle.Font = Enum.Font.GothamBlack
+BrandTitle.TextSize = 15
+BrandTitle.TextColor3 = Theme.TextPrimary
+BrandTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local SubTitle = Instance.new("TextLabel", Sidebar)
+SubTitle.Size = UDim2.new(1, -20, 0, 16)
+SubTitle.Position = UDim2.new(0, 12, 0, 36)
+SubTitle.BackgroundTransparency = 1
+SubTitle.Text = "Autofarm Only"
+SubTitle.Font = Enum.Font.GothamMedium
+SubTitle.TextSize = 11
+SubTitle.TextColor3 = Theme.AccentBright
+SubTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local TabButtonsHolder = Instance.new("Frame", Sidebar)
+TabButtonsHolder.Size = UDim2.new(1, -20, 1, -120)
+TabButtonsHolder.Position = UDim2.new(0, 10, 0, 68)
+TabButtonsHolder.BackgroundTransparency = 1
+local TabListLayout = Instance.new("UIListLayout", TabButtonsHolder)
+TabListLayout.Padding = UDim.new(0, 6)
+
+local TopBar = Instance.new("Frame", MainWindow)
+TopBar.Size = UDim2.new(1, -160, 0, 48)
+TopBar.Position = UDim2.new(0, 160, 0, 0)
+TopBar.BackgroundTransparency = 1
+local ActiveTabTitle = Instance.new("TextLabel", TopBar)
+ActiveTabTitle.Size = UDim2.new(0, 120, 1, 0)
+ActiveTabTitle.Position = UDim2.new(0, 20, 0, 0)
+ActiveTabTitle.BackgroundTransparency = 1
+ActiveTabTitle.Text = "Autofarm"
+ActiveTabTitle.Font = Enum.Font.GothamBold
+ActiveTabTitle.TextSize = 16
+ActiveTabTitle.TextColor3 = Theme.TextPrimary
+ActiveTabTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local MinimizeBtn = Instance.new("TextButton", TopBar)
+MinimizeBtn.Size = UDim2.new(0, 28, 0, 28)
+MinimizeBtn.Position = UDim2.new(1, -42, 0.5, -14)
+MinimizeBtn.BackgroundColor3 = Theme.BgCard
+MinimizeBtn.Text = "—"
+MinimizeBtn.Font = Enum.Font.GothamBold
+MinimizeBtn.TextSize = 13
+MinimizeBtn.TextColor3 = Theme.TextMuted
+Instance.new("UICorner", MinimizeBtn).CornerRadius = UDim.new(0, 6)
+
+local PagesContainer = Instance.new("Frame", MainWindow)
+PagesContainer.Size = UDim2.new(1, -160, 1, -48)
+PagesContainer.Position = UDim2.new(0, 160, 0, 48)
+PagesContainer.BackgroundTransparency = 1
+
+local dragging, dragInput, dragStart, startPos
+local function SetupDrag(frame)
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true dragStart = input.Position startPos = MainWindow.Position
+            input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+        end
+    end)
+    frame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+    end)
+end
+SetupDrag(Sidebar)
+SetupDrag(TopBar)
+
+local iconDragging, iconDragInput, iconDragStart, iconStartPos, iconMoved = false, nil, nil, nil, false
+FloatingIcon.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        iconDragging, iconMoved, iconDragStart, iconStartPos = true, false, input.Position, FloatingIcon.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                iconDragging = false
+                if not iconMoved then FloatingIcon.Visible = false MainWindow.Visible = true end
+            end
+        end)
+    end
+end)
+FloatingIcon.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then iconDragInput = input end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        MainWindow.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    elseif input == iconDragInput and iconDragging then
+        local delta = input.Position - iconDragStart
+        if delta.Magnitude > 5 then iconMoved = true end
+        FloatingIcon.Position = UDim2.new(iconStartPos.X.Scale, iconStartPos.X.Offset + delta.X, iconStartPos.Y.Scale, iconStartPos.Y.Offset + delta.Y)
+    end
+end)
+MinimizeBtn.MouseButton1Click:Connect(function() MainWindow.Visible = false FloatingIcon.Visible = true end)
+
+local Tabs = {}
+local function CreateTab(tabName, iconText)
+    local TabBtn = Instance.new("TextButton", TabButtonsHolder)
+    TabBtn.Size = UDim2.new(1, 0, 0, 36)
+    TabBtn.BackgroundColor3 = Theme.BgCard
+    TabBtn.BackgroundTransparency = 1
+    TabBtn.Text = ""
+    Instance.new("UICorner", TabBtn).CornerRadius = UDim.new(0, 8)
+    local Indicator = Instance.new("Frame", TabBtn)
+    Indicator.Size = UDim2.new(0, 3, 0, 18)
+    Indicator.Position = UDim2.new(0, 0, 0.5, -9)
+    Indicator.BackgroundColor3 = Theme.Accent
+    Indicator.BorderSizePixel = 0
+    Indicator.Visible = false
+    Instance.new("UICorner", Indicator).CornerRadius = UDim.new(1, 0)
+    local Label = Instance.new("TextLabel", TabBtn)
+    Label.Size = UDim2.new(1, -24, 1, 0)
+    Label.Position = UDim2.new(0, 14, 0, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = iconText .. "   " .. tabName
+    Label.Font = Enum.Font.GothamMedium
+    Label.TextSize = 13
+    Label.TextColor3 = Theme.TextMuted
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local Page = Instance.new("ScrollingFrame", PagesContainer)
+    Page.Size = UDim2.new(1, 0, 1, 0)
+    Page.BackgroundTransparency = 1
+    Page.BorderSizePixel = 0
+    Page.ScrollBarThickness = 3
+    Page.ScrollBarImageColor3 = Theme.Accent
+    Page.Visible = false
+    local PageLayout = Instance.new("UIListLayout", Page)
+    PageLayout.Padding = UDim.new(0, 8)
+    local PagePadding = Instance.new("UIPadding", Page)
+    PagePadding.PaddingTop = UDim.new(0, 4)
+    PagePadding.PaddingBottom = UDim.new(0, 16)
+    PagePadding.PaddingLeft = UDim.new(0, 20)
+    PagePadding.PaddingRight = UDim.new(0, 20)
+    
+    local tabData = {Button = TabBtn, Label = Label, Indicator = Indicator, Page = Page, Order = 0}
+    table.insert(Tabs, tabData)
+    TabBtn.MouseButton1Click:Connect(function()
+        for _, t in ipairs(Tabs) do
+            t.Page.Visible = false
+            t.Indicator.Visible = false
+            t.Label.TextColor3 = Theme.TextMuted
+            t.Label.Font = Enum.Font.GothamMedium
+            TweenService:Create(t.Button, TweenInfo.new(0.15), {BackgroundTransparency = 1}):Play()
+        end
+        Page.Visible = true
+        Indicator.Visible = true
+        Label.TextColor3 = Theme.TextPrimary
+        Label.Font = Enum.Font.GothamBold
+        ActiveTabTitle.Text = tabName
+        TweenService:Create(TabBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0}):Play()
+    end)
+    if #Tabs == 1 then Page.Visible = true Indicator.Visible = true Label.TextColor3 = Theme.TextPrimary Label.Font = Enum.Font.GothamBold end
+    return tabData
+end
+
+local function NextOrder(tab) tab.Order = tab.Order + 1 return tab.Order end
+
+local function AddToggle(tab, titleText, defaultState, callback)
+    local Card = Instance.new("Frame", tab.Page)
+    Card.Size = UDim2.new(1, 0, 0, 42)
+    Card.BackgroundColor3 = Theme.BgCard
+    Card.LayoutOrder = NextOrder(tab)
+    Instance.new("UICorner", Card).CornerRadius = UDim.new(0, 8)
+    local Title = Instance.new("TextLabel", Card)
+    Title.Size = UDim2.new(1, -80, 1, 0)
+    Title.Position = UDim2.new(0, 14, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = titleText
+    Title.Font = Enum.Font.GothamSemibold
+    Title.TextSize = 13
+    Title.TextColor3 = Theme.TextPrimary
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    local Switch = Instance.new("TextButton", Card)
+    Switch.Size = UDim2.new(0, 44, 0, 22)
+    Switch.Position = UDim2.new(1, -56, 0.5, -11)
+    Switch.BackgroundColor3 = defaultState and Theme.Accent or Theme.BgControl
+    Switch.Text = ""
+    Instance.new("UICorner", Switch).CornerRadius = UDim.new(1, 0)
+    local Dot = Instance.new("Frame", Switch)
+    Dot.Size = UDim2.new(0, 16, 0, 16)
+    Dot.Position = defaultState and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
+    Dot.BackgroundColor3 = Theme.TextPrimary
+    Instance.new("UICorner", Dot).CornerRadius = UDim.new(1, 0)
+
+    local state = defaultState
+    Switch.MouseButton1Click:Connect(function()
+        state = not state
+        TweenService:Create(Switch, TweenInfo.new(0.18), {BackgroundColor3 = state and Theme.Accent or Theme.BgControl}):Play()
+        TweenService:Create(Dot, TweenInfo.new(0.18), {Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)}):Play()
+        callback(state)
+    end)
+end
+
+local function AddSlider(tab, titleText, minVal, maxVal, defaultVal, callback)
+    local Card = Instance.new("Frame", tab.Page)
+    Card.Size = UDim2.new(1, 0, 0, 50)
+    Card.BackgroundColor3 = Theme.BgCard
+    Card.LayoutOrder = NextOrder(tab)
+    Instance.new("UICorner", Card).CornerRadius = UDim.new(0, 8)
+    local Title = Instance.new("TextLabel", Card)
+    Title.Size = UDim2.new(0, 180, 0, 20)
+    Title.Position = UDim2.new(0, 14, 0, 8)
+    Title.BackgroundTransparency = 1
+    Title.Text = titleText
+    Title.Font = Enum.Font.GothamSemibold
+    Title.TextSize = 13
+    Title.TextColor3 = Theme.TextPrimary
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    local ValueBadge = Instance.new("TextLabel", Card)
+    ValueBadge.Size = UDim2.new(0, 44, 0, 20)
+    ValueBadge.Position = UDim2.new(1, -58, 0, 8)
+    ValueBadge.BackgroundColor3 = Theme.BgControl
+    ValueBadge.Text = tostring(defaultVal)
+    ValueBadge.Font = Enum.Font.GothamBold
+    ValueBadge.TextSize = 12
+    ValueBadge.TextColor3 = Theme.AccentBright
+    Instance.new("UICorner", ValueBadge).CornerRadius = UDim.new(0, 5)
+    local Track = Instance.new("Frame", Card)
+    Track.Size = UDim2.new(1, -28, 0, 6)
+    Track.Position = UDim2.new(0, 14, 0, 34)
+    Track.BackgroundColor3 = Theme.BgControl
+    Instance.new("UICorner", Track).CornerRadius = UDim.new(1, 0)
+    local ratio = math.clamp((defaultVal - minVal) / (maxVal - minVal), 0, 1)
+    local Fill = Instance.new("Frame", Track)
+    Fill.Size = UDim2.new(ratio, 0, 1, 0)
+    Fill.BackgroundColor3 = Theme.Accent
+    Instance.new("UICorner", Fill).CornerRadius = UDim.new(1, 0)
+    local Knob = Instance.new("Frame", Track)
+    Knob.Size = UDim2.new(0, 12, 0, 12)
+    Knob.Position = UDim2.new(ratio, -6, 0.5, -6)
+    Knob.BackgroundColor3 = Theme.TextPrimary
+    Instance.new("UICorner", Knob).CornerRadius = UDim.new(1, 0)
+
+    local sliding = false
+    local function Update(input)
+        local r = math.clamp((input.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
+        local val = math.floor(minVal + (maxVal - minVal) * r)
+        Fill.Size = UDim2.new(r, 0, 1, 0)
+        Knob.Position = UDim2.new(r, -6, 0.5, -6)
+        ValueBadge.Text = tostring(val)
+        callback(val)
+    end
+    Track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            sliding = true Update(input)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then sliding = false end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then Update(input) end
+    end)
+end
+
+-- ============================================================================
+-- MENU BUILD
+-- ============================================================================
+local TabFarm = CreateTab("Autofarm", "⚡")
+
+AddToggle(TabFarm, "Auto Farm Coins (Under Map)", false, function(v)
+    Settings.AutoFarmCoins = v
+    table.clear(CollectedCoins)
+    if not v and not Settings.AutoFarmEvents then ForceStandUpright() end
+end)
+AddToggle(TabFarm, "Auto Farm Candies/Events", false, function(v)
+    Settings.AutoFarmEvents = v
+    table.clear(CollectedCoins)
+    if not v and not Settings.AutoFarmCoins then ForceStandUpright() end
+end)
+AddToggle(TabFarm, "Avoid Murderer While Farming", true, function(v) Settings.AvoidMurdererFarm = v end)
+AddToggle(TabFarm, "Auto Reset When Bag Full", false, function(v) Settings.AutoResetAfterFarm = v end)
+AddSlider(TabFarm, "Farm Speed (Max 28 for Safety)", 14, 28, 25, function(val) Settings.FarmSpeed = val end)
+
+-- ============================================================================
+-- AUTOFARM PURE CFRAME LOGIC (VERTEX METHOD)
+-- ============================================================================
+local function GetSafestMapCoin()
+    local myRoot = GetRootPart(LocalPlayer)
+    if not myRoot or not CachedCoinContainer or not CachedCoinContainer.Parent then return nil, nil end
+    local murderer = FindMurderer()
+    local murdRoot = murderer and GetRootPart(murderer)
+    local myPos = myRoot.Position
+    local bestPart, bestObj = nil, nil
+    local bestScore = -math.huge
+
+    for _, child in ipairs(CachedCoinContainer:GetChildren()) do
+        local expTime = CollectedCoins[child]
+        if not expTime or os.clock() >= expTime then
+            local part = child:IsA("BasePart") and child or child:FindFirstChildWhichIsA("BasePart")
+            if part and part.Transparency < 0.9 then
+                local distToMe = (part.Position - myPos).Magnitude
+                if murdRoot and Settings.AvoidMurdererFarm then
+                    local distToMurd = (part.Position - murdRoot.Position).Magnitude
+                    if distToMurd >= 35 then
+                        local score = (distToMurd * 1.5) - distToMe
+                        if score > bestScore then bestScore = score bestPart = part bestObj = child end
+                    end
+                else
+                    local score = -distToMe
+                    if score > bestScore then bestScore = score bestPart = part bestObj = child end
+                end
+            end
+        end
+    end
+    if not bestPart and CachedCoinContainer then
+        for _, child in ipairs(CachedCoinContainer:GetChildren()) do
+            local exp = CollectedCoins[child]
+            if not exp or os.clock() >= exp then
+                local part = child:IsA("BasePart") and child or child:FindFirstChildWhichIsA("BasePart")
+                if part and part.Transparency < 0.9 then return part, child end
+            end
+        end
+    end
+    return bestPart, bestObj
+end
+
+local ProneAngles = CFrame.Angles(math.rad(90), 0, 0)
+
+RunService.Stepped:Connect(function()
+    local myChar = GetCharacter(LocalPlayer)
+    if not myChar then return end
+    if (Settings.AutoFarmCoins or Settings.AutoFarmEvents) and IsPlayerInActiveMap(LocalPlayer) and not CachedBagIsFull then
+        for _, part in ipairs(myChar:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = false end
+        end
+    end
+end)
+
+RunService.Heartbeat:Connect(function(dt)
+    local myChar = GetCharacter(LocalPlayer)
+    local myRoot = GetRootPart(LocalPlayer)
+    local hum = GetHumanoid(LocalPlayer)
+    if not (myChar and myRoot and hum and hum.Health > 0) then return end
+
+    if Settings.AutoFarmCoins or Settings.AutoFarmEvents then
+        if not IsPlayerInActiveMap(LocalPlayer) or CachedBagIsFull then
+            if hum.PlatformStand then ForceStandUpright() end
+            return
+        end
+
+        local targetPart, targetObj = GetSafestMapCoin()
+        if not targetPart then return end
+
+        hum.PlatformStand = true
+        myRoot.AssemblyLinearVelocity = Vector3.zero
+        myRoot.AssemblyAngularVelocity = Vector3.zero
+
+        local goalPos = Vector3.new(targetPart.Position.X, targetPart.Position.Y + Settings.UnderMapDepth, targetPart.Position.Z)
+        local curPos = myRoot.Position
+        local deltaVec = goalPos - curPos
+        local dist3D = deltaVec.Magnitude
+        local stepDist = Settings.FarmSpeed * dt
+
+        if dist3D <= math.max(stepDist * 1.5, 2.5) then
+            myRoot.CFrame = CFrame.new(goalPos) * ProneAngles
+            local oldTransp = targetPart.Transparency
+            targetPart.Transparency = 1
+            if firetouchinterest then pcall(function() firetouchinterest(myRoot, targetPart, 0) firetouchinterest(myRoot, targetPart, 1) end) end
+            CollectedCoins[targetObj] = os.clock() + 3.0
+            task.delay(3, function() if targetPart then targetPart.Transparency = oldTransp end end)
+        else
+            myRoot.CFrame = CFrame.new(curPos + (deltaVec.Unit * stepDist)) * ProneAngles
+        end
+    end
+end)
