@@ -1,6 +1,6 @@
 -- ============================================================================
--- HARMONY HUB V5 (ENGLISH EDITION) - MADE BY HARMONY
--- Anti-Murderer Autofarm, Instant Kill All, Lobby-Safe Posture & Fast Role ESP
+-- HARMONY HUB V5.1 (ENGLISH EDITION) - MADE BY HARMONY
+-- Untouched V5 Autofarm + Fixed True Sheriff Silent Aim (CreateBeam Override)
 -- ============================================================================
 
 local Players = game:GetService("Players")
@@ -46,7 +46,7 @@ local Theme = {
 -- STATE & CONFIGURATION
 -- ============================================================================
 local Settings = {
-    -- Autofarm
+    -- Autofarm (Untouched)
     AutoFarmCoins = false,
     AutoFarmEvents = false,
     AvoidMurdererFarm = true,
@@ -98,6 +98,11 @@ local BagFullHandledThisRound = false
 local SavedMapReturnCFrame = nil
 local PreFlingCFrame = nil
 
+-- Pre-calculated Silent Aim Caches (Updated every frame for zero-latency hooks)
+local SilentAimTargetPos = nil
+local SilentAimTargetPart = nil
+local IsHoldingGun = false
+
 -- ============================================================================
 -- CHARACTER, MAP & ROLE UTILITIES
 -- ============================================================================
@@ -124,7 +129,6 @@ local function HasItem(player, itemName)
     return false
 end
 
--- Checks if a player is actually inside the active map (and not standing in the Lobby)
 local function IsPlayerInActiveMap(player)
     local root = GetRootPart(player)
     if not root or not CachedCoinContainer or not CachedCoinContainer.Parent then
@@ -134,7 +138,6 @@ local function IsPlayerInActiveMap(player)
         return false
     end
 
-    -- Compare horizontal distance to the map's CoinContainer or Spawns
     local mapModel = CachedCoinContainer.Parent
     local refPos = nil
 
@@ -155,11 +158,9 @@ end
 
 local function GetPlayerRole(player)
     if not player then return "Innocent" end
-    -- Physical weapon check always takes priority
     if HasItem(player, "Knife") then return "Murderer" end
     if HasItem(player, "Gun") or HasItem(player, "Revolver") then return "Sheriff" end
 
-    -- Only use pre-round cached roles if the round is genuinely active and player isn't dead in lobby
     if RoundIsActive and not CachedDeadPlayers[player.Name] then
         local cached = CachedRoles[player.Name]
         if cached == "Murderer" then
@@ -205,7 +206,6 @@ local function ForceStandUpright()
         root.AssemblyLinearVelocity = Vector3.zero
         root.AssemblyAngularVelocity = Vector3.zero
 
-        -- If the character is tilted horizontally (prone), stand them back up vertically
         local _, yYaw, _ = root.CFrame:ToEulerAnglesYXZ()
         local lookFlat = root.CFrame.LookVector
         if math.abs(lookFlat.Y) > 0.5 then
@@ -293,7 +293,6 @@ end
 
 task.spawn(function()
     while task.wait(0.25) do
-        -- 1. Scan Workspace for CoinContainer and GunDrop
         local foundContainer = Workspace:FindFirstChild("CoinContainer", true)
         local foundGun = Workspace:FindFirstChild("GunDrop", true)
 
@@ -305,7 +304,6 @@ task.spawn(function()
         CachedCoinContainer = foundContainer
         CachedGunDrop = foundGun
 
-        -- 2. Poll GetPlayerData every 0.25s for instant Pre-Round Role ESP & Lobby Reset
         local anyRoleAssigned = false
         local newRoles = {}
         local newDead = {}
@@ -332,7 +330,6 @@ task.spawn(function()
             end
         end)
 
-        -- Also check if anyone physically holds a Knife or Gun
         for _, p in ipairs(Players:GetPlayers()) do
             if HasItem(p, "Knife") then
                 newRoles[p.Name] = "Murderer"
@@ -345,7 +342,6 @@ task.spawn(function()
             end
         end
 
-        -- If round ended (no CoinContainer and no active Murderer/Sheriff), wipe old roles immediately
         if anyRoleAssigned or (foundContainer ~= nil) then
             RoundIsActive = true
             CachedRoles = newRoles
@@ -356,7 +352,6 @@ task.spawn(function()
             table.clear(CachedDeadPlayers)
         end
 
-        -- 3. Check Bag Full (only when local player is actually inside the active map)
         local inMap = IsPlayerInActiveMap(LocalPlayer)
         CachedBagIsFull = inMap and CheckIfBagFullUI()
 
@@ -389,7 +384,6 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 local ok = pcall(function() ScreenGui.Parent = CoreGui end)
 if not ok then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
 
--- Floating "HY" Button (Shown when minimized)
 local FloatingIcon = Instance.new("TextButton")
 FloatingIcon.Name = "HYFloatingIcon"
 FloatingIcon.Size = UDim2.new(0, 50, 0, 50)
@@ -412,7 +406,6 @@ IconStroke.Color = Theme.Accent
 IconStroke.Thickness = 2
 IconStroke.Parent = FloatingIcon
 
--- Main Window
 local MainWindow = Instance.new("Frame")
 MainWindow.Name = "MainWindow"
 MainWindow.Size = UDim2.new(0, 620, 0, 420)
@@ -431,7 +424,6 @@ WinStroke.Color = Theme.Stroke
 WinStroke.Thickness = 1.5
 WinStroke.Parent = MainWindow
 
--- Sidebar
 local Sidebar = Instance.new("Frame")
 Sidebar.Name = "Sidebar"
 Sidebar.Size = UDim2.new(0, 180, 1, 0)
@@ -508,7 +500,6 @@ FooterLabel.TextSize = 12
 FooterLabel.TextColor3 = Theme.AccentBright
 FooterLabel.Parent = FooterCard
 
--- Top Bar & Pre-Round Role Banner
 local TopBar = Instance.new("Frame")
 TopBar.Size = UDim2.new(1, -180, 0, 48)
 TopBar.Position = UDim2.new(0, 180, 0, 0)
@@ -565,7 +556,6 @@ PagesContainer.Position = UDim2.new(0, 180, 0, 48)
 PagesContainer.BackgroundTransparency = 1
 PagesContainer.Parent = MainWindow
 
--- Dragging Logic for MainWindow & FloatingIcon
 local dragging, dragInput, dragStart, startPos
 local function SetupDrag(frame)
     frame.InputBegan:Connect(function(input)
@@ -1129,40 +1119,88 @@ local function AddKeybind(tab, titleText, defaultText, callback)
 end
 
 -- ============================================================================
--- SILENT AIM, SHOOT MURDERER & INSTANT KILL ALL (MURDERER)
+-- FIXED SHERIFF SILENT AIM, SHOOT MURDERER & INSTANT KILL ALL
 -- ============================================================================
-local function GetPredictedMurdererPosition()
+local function ComputeMurdererAimPoint()
     local murderer = FindMurderer()
-    if not murderer or not murderer.Character then return nil end
-    local murdRoot = murderer.Character:FindFirstChild("HumanoidRootPart") or murderer.Character:FindFirstChild("UpperTorso") or murderer.Character:FindFirstChild("Torso")
+    if not murderer or not murderer.Character then return nil, nil end
+    local murdRoot = murderer.Character:FindFirstChild("HumanoidRootPart")
+        or murderer.Character:FindFirstChild("UpperTorso")
+        or murderer.Character:FindFirstChild("Torso")
     if murdRoot then
-        return murdRoot.Position + (murdRoot.AssemblyLinearVelocity * 0.12)
+        local vel = murdRoot.AssemblyLinearVelocity
+        local predicted = murdRoot.Position + Vector3.new(vel.X * 0.125, math.clamp(vel.Y * 0.04, -1.5, 1.5), vel.Z * 0.125)
+        return predicted, murdRoot
     end
-    return nil
+    return nil, nil
 end
 
-local function FireMM2GunRemote(gunTool, targetPos)
+-- Synchronizes KnifeLocal state so the default MM2 gun script never wastes cooldown shooting at the cursor
+local function SyncGunSilentAimState(gunTool)
+    if not gunTool or not gunTool:IsA("Tool") then return end
+    if gunTool.Name ~= "Gun" and gunTool.Name ~= "Revolver" then return end
+
+    local knifeLocal = gunTool:FindFirstChild("KnifeLocal")
+    if knifeLocal and knifeLocal:IsA("LocalScript") then
+        -- Disable KnifeLocal's cursor shot when Silent Aim is ON; restore it when OFF
+        knifeLocal.Disabled = Settings.SilentAim
+    end
+
+    if getconnections and Settings.SilentAim then
+        pcall(function()
+            for _, conn in ipairs(getconnections(gunTool.Activated)) do
+                if conn.Function and (not isexecutorclosure or not isexecutorclosure(conn.Function)) then
+                    conn:Disable()
+                end
+            end
+        end)
+    end
+end
+
+local function SyncAllPlayerGuns()
+    local char = GetCharacter(LocalPlayer)
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if char then
+        for _, item in ipairs(char:GetChildren()) do
+            SyncGunSilentAimState(item)
+        end
+    end
+    if bp then
+        for _, item in ipairs(bp:GetChildren()) do
+            SyncGunSilentAimState(item)
+        end
+    end
+end
+
+local function FireMM2GunAtPosition(gunTool, targetPos)
     if not gunTool or not targetPos then return false end
     local fired = false
 
-    local knifeServer = gunTool:FindFirstChild("KnifeServer")
-    local shootGun = knifeServer and knifeServer:FindFirstChild("ShootGun")
-    if shootGun and shootGun:IsA("RemoteFunction") then
-        fired = true
-        task.spawn(function()
-            pcall(function() shootGun:InvokeServer(1, targetPos, "AH2") end)
-        end)
-    end
-
+    -- 1. Primary MM2 Gun Remote: Gun.KnifeLocal.CreateBeam.RemoteFunction
     local createBeam = gunTool:FindFirstChild("CreateBeam", true)
     local beamRemote = createBeam and createBeam:FindFirstChildOfClass("RemoteFunction")
     if beamRemote then
         fired = true
         task.spawn(function()
-            pcall(function() beamRemote:InvokeServer(1, targetPos, "AH2") end)
+            pcall(function()
+                beamRemote:InvokeServer(1, targetPos, "AH2")
+            end)
         end)
     end
 
+    -- 2. Secondary MM2 Gun Remote: Gun.KnifeServer.ShootGun
+    local knifeServer = gunTool:FindFirstChild("KnifeServer")
+    local shootGun = knifeServer and knifeServer:FindFirstChild("ShootGun")
+    if shootGun and shootGun:IsA("RemoteFunction") then
+        fired = true
+        task.spawn(function()
+            pcall(function()
+                shootGun:InvokeServer(1, targetPos, "AH2")
+            end)
+        end)
+    end
+
+    -- 3. Fallback scan for any other RemoteFunction inside Gun
     if not fired then
         for _, desc in ipairs(gunTool:GetDescendants()) do
             if desc:IsA("RemoteFunction") then
@@ -1170,7 +1208,6 @@ local function FireMM2GunRemote(gunTool, targetPos)
                 local r = desc
                 task.spawn(function()
                     pcall(function() r:InvokeServer(1, targetPos, "AH2") end)
-                    pcall(function() r:InvokeServer(targetPos) end)
                 end)
             end
         end
@@ -1178,10 +1215,54 @@ local function FireMM2GunRemote(gunTool, targetPos)
     return fired
 end
 
+local lastSilentShotClock = 0
+local function HookGunTool(tool)
+    if not tool or not tool:IsA("Tool") then return end
+    if tool.Name ~= "Gun" and tool.Name ~= "Revolver" then return end
+
+    SyncGunSilentAimState(tool)
+
+    tool.Equipped:Connect(function()
+        task.defer(function()
+            SyncGunSilentAimState(tool)
+        end)
+    end)
+
+    tool.Activated:Connect(function()
+        if Settings.SilentAim then
+            if os.clock() - lastSilentShotClock < 0.25 then return end
+            lastSilentShotClock = os.clock()
+            local aimPos = SilentAimTargetPos or ComputeMurdererAimPoint() or Mouse.Hit.Position
+            if aimPos then
+                FireMM2GunAtPosition(tool, aimPos)
+            end
+        end
+    end)
+end
+
+-- Intercept left-click / tap when holding the Gun while Silent Aim is active (even if KnifeLocal is disabled)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed or not Settings.SilentAim then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        local myChar = GetCharacter(LocalPlayer)
+        local gun = myChar and (myChar:FindFirstChild("Gun") or myChar:FindFirstChild("Revolver"))
+        if gun then
+            SyncGunSilentAimState(gun)
+            if os.clock() - lastSilentShotClock >= 0.25 then
+                lastSilentShotClock = os.clock()
+                local aimPos = SilentAimTargetPos or ComputeMurdererAimPoint() or Mouse.Hit.Position
+                if aimPos then
+                    FireMM2GunAtPosition(gun, aimPos)
+                end
+            end
+        end
+    end
+end)
+
 local isShootingMacro = false
 local function ShootMurdererNow()
     if isShootingMacro then return end
-    local targetPos = GetPredictedMurdererPosition()
+    local targetPos = SilentAimTargetPos or ComputeMurdererAimPoint()
     local myChar = GetCharacter(LocalPlayer)
     local hum = GetHumanoid(LocalPlayer)
     if not (myChar and hum and targetPos) then return end
@@ -1193,6 +1274,7 @@ local function ShootMurdererNow()
             local bp = LocalPlayer:FindFirstChild("Backpack")
             local bpGun = bp and (bp:FindFirstChild("Gun") or bp:FindFirstChild("Revolver"))
             if bpGun then
+                SyncGunSilentAimState(bpGun)
                 hum:EquipTool(bpGun)
                 local timeout = 0
                 repeat
@@ -1200,21 +1282,21 @@ local function ShootMurdererNow()
                     timeout = timeout + 0.03
                     gun = myChar:FindFirstChild("Gun") or myChar:FindFirstChild("Revolver")
                 until gun or timeout >= 0.35
-                task.wait(0.08)
+                task.wait(0.06)
             end
         end
 
         if gun then
-            local freshTargetPos = GetPredictedMurdererPosition() or targetPos
-            FireMM2GunRemote(gun, freshTargetPos)
-            pcall(function() gun:Activate() end)
+            SyncGunSilentAimState(gun)
+            local freshTargetPos = SilentAimTargetPos or ComputeMurdererAimPoint() or targetPos
+            FireMM2GunAtPosition(gun, freshTargetPos)
         end
         task.wait(0.15)
         isShootingMacro = false
     end)
 end
 
--- Instant Kill All (Without dragging players onto your screen or triggering in the lobby)
+-- Instant Kill All (Murderer)
 local isKillingAll = false
 local function ExecuteInstantKillAll()
     if isKillingAll then return end
@@ -1260,7 +1342,6 @@ local function ExecuteInstantKillAll()
                                 firetouchinterest(handle, tRoot, 1)
                             end)
                         else
-                            -- Invisible 1-frame hit registration underneath the knife handle (not blocking camera)
                             local oldCF = tRoot.CFrame
                             tRoot.CFrame = (handle and handle.CFrame or myRoot.CFrame) * CFrame.new(0, -2.5, 0)
                             RunService.Heartbeat:Wait()
@@ -1277,60 +1358,57 @@ local function ExecuteInstantKillAll()
     end)
 end
 
--- Hook Gun Tool Activation for Silent Aim
-local function HookGunTool(tool)
-    if not tool or not tool:IsA("Tool") then return end
-    if tool.Name == "Gun" or tool.Name == "Revolver" then
-        tool.Activated:Connect(function()
-            if Settings.SilentAim then
-                local targetPos = GetPredictedMurdererPosition()
-                if targetPos then
-                    FireMM2GunRemote(tool, targetPos)
-                end
-            end
-        end)
-    end
-end
-
 local function SetupCharacterHooks(char)
     if not char then return end
     table.clear(CollectedCoins)
     BagFullHandledThisRound = false
     SavedMapReturnCFrame = nil
 
-    -- Always ensure freshly spawned character in Lobby stands upright
     task.delay(0.15, ForceStandUpright)
 
     for _, child in ipairs(char:GetChildren()) do
         HookGunTool(child)
     end
     char.ChildAdded:Connect(HookGunTool)
+
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if bp then
+        for _, child in ipairs(bp:GetChildren()) do
+            HookGunTool(child)
+        end
+        bp.ChildAdded:Connect(HookGunTool)
+    end
 end
 
 if LocalPlayer.Character then SetupCharacterHooks(LocalPlayer.Character) end
 LocalPlayer.CharacterAdded:Connect(SetupCharacterHooks)
 
+-- Pure Zero-Namecall Metamethod Hooks (Never calls ':' inside the hook so Luau namecall stack stays intact)
 pcall(function()
-    if hookmetamethod and getnamecallmethod and not getgenv().HarmonySilentAimHookedV5 then
-        getgenv().HarmonySilentAimHookedV5 = true
-
+    if hookmetamethod and getnamecallmethod then
         local oldNamecall
         oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
             local method = getnamecallmethod()
-            if Settings.SilentAim and (method == "InvokeServer" or method == "FireServer") then
-                local name = tostring(self)
-                if name == "ShootGun" or name == "RemoteFunction" or (self.Parent and (self.Parent.Name == "CreateBeam" or self.Parent.Name == "KnifeServer")) then
-                    local targetPos = GetPredictedMurdererPosition()
-                    if targetPos then
-                        local args = {...}
-                        for i, v in ipairs(args) do
-                            if typeof(v) == "Vector3" then
-                                args[i] = targetPos
-                            elseif typeof(v) == "CFrame" then
-                                args[i] = CFrame.new(targetPos)
-                            end
-                        end
-                        return oldNamecall(self, unpack(args))
+            local aimPos = SilentAimTargetPos
+
+            if Settings.SilentAim and aimPos then
+                if method == "InvokeServer" or method == "FireServer" then
+                    local a1, a2, a3 = ...
+                    -- Exact MM2 CreateBeam / ShootGun signature: (1, Vector3, "AH2")
+                    if a1 == 1 and typeof(a2) == "Vector3" then
+                        if setnamecallmethod then setnamecallmethod(method) end
+                        return oldNamecall(self, a1, aimPos, a3)
+                    elseif typeof(a1) == "Vector3" then
+                        if setnamecallmethod then setnamecallmethod(method) end
+                        return oldNamecall(self, aimPos, a2, a3)
+                    end
+                elseif IsHoldingGun and (method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRay") then
+                    local r, a2, a3, a4 = ...
+                    if typeof(r) == "Ray" then
+                        local origin = r.Origin
+                        local dir = (aimPos - origin).Unit * 999
+                        if setnamecallmethod then setnamecallmethod(method) end
+                        return oldNamecall(self, Ray.new(origin, dir), a2, a3, a4)
                     end
                 end
             end
@@ -1339,18 +1417,11 @@ pcall(function()
 
         local oldIndex
         oldIndex = hookmetamethod(game, "__index", function(self, key)
-            if Settings.SilentAim and self == Mouse and (key == "Hit" or key == "Target") then
-                local myChar = LocalPlayer.Character
-                if myChar and (myChar:FindFirstChild("Gun") or myChar:FindFirstChild("Revolver")) then
-                    local murderer = FindMurderer()
-                    local murdRoot = GetRootPart(murderer)
-                    if murdRoot then
-                        if key == "Hit" then
-                            return CFrame.new(murdRoot.Position + (murdRoot.AssemblyLinearVelocity * 0.12))
-                        elseif key == "Target" then
-                            return murdRoot
-                        end
-                    end
+            if Settings.SilentAim and IsHoldingGun and self == Mouse and SilentAimTargetPos then
+                if key == "Hit" or key == "hit" then
+                    return CFrame.new(SilentAimTargetPos)
+                elseif (key == "Target" or key == "target") and SilentAimTargetPart then
+                    return SilentAimTargetPart
                 end
             end
             return oldIndex(self, key)
@@ -1367,7 +1438,7 @@ local TabTarget  = CreateTab("Target", "👤")
 local TabVisuals = CreateTab("Visuals", "👁")
 local TabServer  = CreateTab("Server", "⚙")
 
--- TAB 1: AUTOFARM
+-- TAB 1: AUTOFARM (100% UNTOUCHED AS REQUESTED)
 AddToggle(TabFarm, "Auto Farm Coins (Under Map)", "Stays standing in lobby, glides under coins during rounds", false, false, function(v)
     if v and not Settings.AutoFarmEvents and IsPlayerInActiveMap(LocalPlayer) and GetRootPart(LocalPlayer) then
         SavedMapReturnCFrame = GetRootPart(LocalPlayer).CFrame
@@ -1410,8 +1481,9 @@ AddToggle(TabCombat, "Auto Kill All (Murderer)", "Eliminates all map players at 
     Settings.AutoKillAll = v
     if v then ExecuteInstantKillAll() end
 end)
-AddToggle(TabCombat, "Silent Aim (Sheriff)", "Redirects bullets to the Murderer without locking your camera", false, false, function(v)
+AddToggle(TabCombat, "Silent Aim (Sheriff)", "Overrides Gun beam to hit the Murderer wherever you shoot", false, false, function(v)
     Settings.SilentAim = v
+    SyncAllPlayerGuns()
 end)
 AddToggle(TabCombat, "Kill Murderer (Blatant)", "Teleports behind the Murderer and shoots immediately", false, true, function(v)
     Settings.KillMurdererBlatant = v
@@ -1515,7 +1587,7 @@ end)
 AddToggle(TabServer, "Auto Save Settings", "Saves your current configuration locally", false, false, function(v)
     Settings.AutoSaveSettings = v
     if v and writefile then
-        pcall(function() writefile("HarmonyObsidianMM2_V5.json", HttpService:JSONEncode(Settings)) end)
+        pcall(function() writefile("HarmonyObsidianMM2_V5_1.json", HttpService:JSONEncode(Settings)) end)
     end
 end)
 AddToggle(TabServer, "Auto ReExecute", "Queues script execution on server hop", false, false, function(v)
@@ -1543,7 +1615,7 @@ AddDropdown(TabServer, "Select Command", function() return CommandList end, func
 end)
 
 -- ============================================================================
--- ANTI-MURDERER COIN SELECTION & LOBBY-SAFE AUTOFARM
+-- ANTI-MURDERER COIN SELECTION & LOBBY-SAFE AUTOFARM (UNTOUCHED)
 -- ============================================================================
 local function GetCoinBasePart(obj)
     if obj:IsA("BasePart") then return obj end
@@ -1571,7 +1643,6 @@ local function IsCoinCollectible(coinObj)
     return true
 end
 
--- Selects coins that are safe and far away from the Murderer
 local function GetSafestMapCoin()
     local myRoot = GetRootPart(LocalPlayer)
     if not myRoot or not CachedCoinContainer or not CachedCoinContainer.Parent then
@@ -1598,14 +1669,12 @@ local function GetSafestMapCoin()
                 if murdRoot and Settings.AvoidMurdererFarm then
                     local distToMurd = (coinPos - murdRoot.Position).Magnitude
 
-                    -- Track the absolute furthest coin from Murderer as fallback if Murderer is near everything
                     if distToMurd > fallbackDist then
                         fallbackDist = distToMurd
                         fallbackPart = part
                         fallbackObj = child
                     end
 
-                    -- Only consider coins at least 38 studs away from the Murderer, and reward distance from Murderer
                     if distToMurd >= 38 then
                         local score = (distToMurd * 2.2) - distToMe
                         if score > bestScore then
@@ -1615,7 +1684,6 @@ local function GetSafestMapCoin()
                         end
                     end
                 else
-                    -- No Murderer nearby or AvoidMurderer disabled: pick nearest coin
                     local score = -distToMe
                     if score > bestScore then
                         bestScore = score
@@ -1635,7 +1703,6 @@ end
 
 local ProneAngles = CFrame.Angles(math.rad(90), 0, 0)
 
--- Stepped Loop: Enforces Noclip ONLY when actively farming inside the map (never in Lobby)
 RunService.Stepped:Connect(function()
     local myChar = GetCharacter(LocalPlayer)
     local hum = GetHumanoid(LocalPlayer)
@@ -1666,14 +1733,13 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- Heartbeat Loop: Lobby-to-Map Fling & Anti-Murderer Under-Map Autofarm
 RunService.Heartbeat:Connect(function(dt)
     local myChar = GetCharacter(LocalPlayer)
     local myRoot = GetRootPart(LocalPlayer)
     local hum = GetHumanoid(LocalPlayer)
     if not (myChar and myRoot and hum and hum.Health > 0) then return end
 
-    -- 1. LOBBY-TO-MAP FLING ENGINE (Kept intact as requested)
+    -- 1. LOBBY-TO-MAP FLING ENGINE
     local flingSubject = nil
     if Settings.FlingTarget and Settings.SelectedTarget then
         flingSubject = Settings.SelectedTarget
@@ -1698,9 +1764,8 @@ RunService.Heartbeat:Connect(function(dt)
         end
     end
 
-    -- 2. LOBBY-SAFE, ANTI-MURDERER UNDER-MAP AUTOFARM
+    -- 2. LOBBY-SAFE, ANTI-MURDERER UNDER-MAP AUTOFARM (UNTOUCHED)
     if Settings.AutoFarmCoins or Settings.AutoFarmEvents then
-        -- If we are in the Lobby (after Auto Reset or between rounds) or Bag is Full, stay standing upright!
         if not IsPlayerInActiveMap(LocalPlayer) or CachedBagIsFull then
             if myRoot:FindFirstChild("HarmonyFarmBV") or hum.PlatformStand then
                 ForceStandUpright()
@@ -1767,11 +1832,22 @@ RunService.Heartbeat:Connect(function(dt)
 end)
 
 -- ============================================================================
--- VISUALS, FAST ESP REFRESH, INSTANT KILL ALL & GUN DROP CHAM
+-- VISUALS, SILENT AIM CACHE REFRESH, INSTANT KILL ALL & GUN DROP CHAM
 -- ============================================================================
 RunService.RenderStepped:Connect(function()
     local myChar = GetCharacter(LocalPlayer)
     local myRoot = GetRootPart(LocalPlayer)
+
+    -- Update Pre-Calculated Silent Aim Cache every frame
+    SilentAimTargetPos, SilentAimTargetPart = ComputeMurdererAimPoint()
+    local equippedGun = myChar and (myChar:FindFirstChild("Gun") or myChar:FindFirstChild("Revolver"))
+    IsHoldingGun = (equippedGun ~= nil)
+    if equippedGun and Settings.SilentAim then
+        local kl = equippedGun:FindFirstChild("KnifeLocal")
+        if kl and not kl.Disabled then
+            kl.Disabled = true
+        end
+    end
 
     if Settings.FlingTarget or Settings.FlingMurderer or Settings.FlingSheriff then
         if myRoot then
@@ -1779,7 +1855,6 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- Update TopBar Role Banner (Automatically clears when in Lobby between rounds)
     local murdPlayer = FindMurderer()
     local sherPlayer = FindSheriff()
     if RoundIsActive and (murdPlayer or sherPlayer) then
@@ -1792,19 +1867,16 @@ RunService.RenderStepped:Connect(function()
         RoleBanner.Text = "Lobby (Waiting for new round...)"
     end
 
-    -- Spectate Target
     if Settings.SpectateTarget and Settings.SelectedTarget then
         local tHum = GetHumanoid(Settings.SelectedTarget)
         if tHum then Camera.CameraSubject = tHum end
     end
 
-    -- Loop Go To Target
     if Settings.LoopGoToTarget and Settings.SelectedTarget and myRoot then
         local tRoot = GetRootPart(Settings.SelectedTarget)
         if tRoot then myRoot.CFrame = tRoot.CFrame * CFrame.new(0, 0, 3) end
     end
 
-    -- Murderer Combat: Instant Kill All (Lobby-Safe) & Knife Aura
     if HasItem(LocalPlayer, "Knife") and IsPlayerInActiveMap(LocalPlayer) and myRoot then
         if Settings.AutoKillAll then
             ExecuteInstantKillAll()
@@ -1829,7 +1901,6 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- Sheriff Combat (Blatant Kill & Auto Shoot)
     if murdPlayer and myRoot and IsPlayerInActiveMap(LocalPlayer) and IsPlayerInActiveMap(murdPlayer) then
         local murdRoot = GetRootPart(murdPlayer)
         if murdRoot then
@@ -1848,7 +1919,6 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- Fast Player Chams & Name ESP (Clears old roles when players are in Lobby)
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer and p.Character then
             local char = p.Character
@@ -1916,7 +1986,6 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- Gun Drop Cham + Wall-Through Beacon (Fixed for all MM2 maps)
     if CachedGunDrop and CachedGunDrop.Parent then
         local gunPart = CachedGunDrop:IsA("BasePart") and CachedGunDrop or CachedGunDrop:FindFirstChildWhichIsA("BasePart", true)
         if gunPart then
