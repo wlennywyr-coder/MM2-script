@@ -1,6 +1,6 @@
 -- ============================================================================
--- MM2 OBSIDIAN SUITE - MADE BY HARMONY
--- Interface Moderne à Onglets (Sidebar) + Autofarm Sous la Map + Fling + ESP
+-- HARMONY HUB V3 (ENGLISH EDITION) - MADE BY HARMONY
+-- Complete MM2 Suite: Pre-Round Role Detector, True Silent Aim, Smart Autofarm
 -- ============================================================================
 
 local Players = game:GetService("Players")
@@ -15,37 +15,38 @@ local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
+local Mouse = LocalPlayer:GetMouse()
 
 -- ============================================================================
--- PALETTE DE COULEURS (THÈME OBSIDIAN & INDIGO ÉLÉGANT)
+-- COLOR PALETTE (OBSIDIAN & INDIGO THEME)
 -- ============================================================================
 local Theme = {
-    BgMain       = Color3.fromHex("#0D0F17"), -- Fond principal très sombre
-    BgSidebar    = Color3.fromHex("#11141F"), -- Barre latérale
-    BgCard       = Color3.fromHex("#161A27"), -- Cartes d'options
-    BgControl    = Color3.fromHex("#202638"), -- Fond des boutons/switches désactivés
-    Stroke       = Color3.fromHex("#262D42"), -- Bordures subtiles
-    Accent       = Color3.fromHex("#6366F1"), -- Bleu Indigo moderne
-    AccentBright = Color3.fromHex("#818CF8"), -- Indigo clair (survol / texte)
-    Danger       = Color3.fromHex("#F43F5E"), -- Rouge corail doux (options Blatant)
-    TextPrimary  = Color3.fromHex("#F8FAFC"), -- Blanc pur
-    TextMuted    = Color3.fromHex("#94A3B8"), -- Gris bleuté
-    -- Couleurs ESP
-    SheriffESP   = Color3.fromHex("#1D4ED8"), -- Bleu foncé demandé pour le Shérif
-    MurdererESP  = Color3.fromHex("#EF4444"), -- Rouge pour le Murderer
-    InnocentESP  = Color3.fromHex("#10B981")  -- Vert émeraude pour les Innocents
+    BgMain       = Color3.fromHex("#0D0F17"),
+    BgSidebar    = Color3.fromHex("#11141F"),
+    BgCard       = Color3.fromHex("#161A27"),
+    BgControl    = Color3.fromHex("#202638"),
+    Stroke       = Color3.fromHex("#262D42"),
+    Accent       = Color3.fromHex("#6366F1"),
+    AccentBright = Color3.fromHex("#818CF8"),
+    Danger       = Color3.fromHex("#F43F5E"),
+    TextPrimary  = Color3.fromHex("#F8FAFC"),
+    TextMuted    = Color3.fromHex("#94A3B8"),
+    -- Role ESP Colors
+    SheriffESP   = Color3.fromHex("#1D4ED8"), -- Dark Royal Blue for Sheriff
+    MurdererESP  = Color3.fromHex("#EF4444"), -- Red for Murderer
+    InnocentESP  = Color3.fromHex("#10B981")  -- Green for Innocent
 }
 
 -- ============================================================================
--- ÉTAT ET CONFIGURATION
+-- STATE & SETTINGS
 -- ============================================================================
 local Settings = {
     -- Autofarm
     AutoFarmCoins = false,
     AutoFarmEvents = false,
+    AutoResetAfterFarm = false,
     FarmSpeed = 24,
-    UnderMapOffset = -3.2,
-    SafeWaitDepth = -8.5,
+    UnderMapOffset = -3.0,
 
     -- Combat
     AuraDistance = 5,
@@ -55,7 +56,7 @@ local Settings = {
     AutoShootMurderer = false,
     ShootMurdererKey = Enum.KeyCode.Unknown,
 
-    -- Ciblage & Fling
+    -- Target & Fling
     SelectedTarget = nil,
     FlingTarget = false,
     SpectateTarget = false,
@@ -63,28 +64,30 @@ local Settings = {
     FlingSheriff = false,
     FlingMurderer = false,
 
-    -- Visuels & Emotes
+    -- Visuals & Emotes
     PlayerChams = false,
     GunCham = false,
-    Rendering3D = true,
     NameESP = false,
     SelectedEmote = "ninja",
     AutoEmote = false,
 
-    -- Serveur
+    -- Server
     AutoSaveSettings = false,
     AutoReExecute = false,
-    AutoRejoin = false,
-    SelectedCommand = "Reset Character"
+    AutoRejoin = false
 }
 
 local EmoteList = {"ninja", "zen", "floss", "dab", "sit", "headless"}
 local CommandList = {"Reset Character", "Clear ESP", "Toggle UI"}
+
+local CachedRoles = {}
 local CollectedCoins = {}
+local BagFullRestored = false
+local LastSafeMapPosition = nil
 local PreFlingCFrame = nil
 
 -- ============================================================================
--- FONCTIONS UTILITAIRES MM2
+-- MM2 ROLE & ROUND DETECTION (WORKS DURING THE 10s COUNTDOWN)
 -- ============================================================================
 local function GetCharacter(player)
     return player and player.Character
@@ -109,10 +112,34 @@ local function HasItem(player, itemName)
     return false
 end
 
+-- Polls ReplicatedStorage.GetPlayerData to reveal roles before weapons spawn
+task.spawn(function()
+    while task.wait(0.8) do
+        pcall(function()
+            local getPlayerData = ReplicatedStorage:FindFirstChild("GetPlayerData", true)
+            if getPlayerData and getPlayerData:IsA("RemoteFunction") then
+                local data = getPlayerData:InvokeServer()
+                if type(data) == "table" then
+                    for playerName, info in pairs(data) do
+                        if type(info) == "table" and info.Role then
+                            CachedRoles[playerName] = info.Role
+                        end
+                    end
+                end
+            end
+        end)
+    end
+end)
+
 local function GetPlayerRole(player)
-    if HasItem(player, "Knife") then
+    if not player then return "Innocent" end
+    if HasItem(player, "Knife") then return "Murderer" end
+    if HasItem(player, "Gun") or HasItem(player, "Revolver") then return "Sheriff" end
+
+    local cached = CachedRoles[player.Name]
+    if cached == "Murderer" then
         return "Murderer"
-    elseif HasItem(player, "Gun") or HasItem(player, "Revolver") then
+    elseif cached == "Sheriff" or cached == "Hero" then
         return "Sheriff"
     end
     return "Innocent"
@@ -136,19 +163,75 @@ local function FindSheriff()
     return nil
 end
 
-local function RestoreCharacter()
-    local hum = GetHumanoid(LocalPlayer)
+-- ============================================================================
+-- MAP, LOBBY & COIN BAG CAPACITY DETECTION
+-- ============================================================================
+local function FindActiveCoinContainer()
+    for _, desc in ipairs(Workspace:GetDescendants()) do
+        if desc.Name == "CoinContainer" and #desc:GetChildren() > 0 then
+            return desc
+        end
+    end
+    return nil
+end
+
+local function IsBagFull()
+    local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pGui then return false end
+
+    for _, desc in ipairs(pGui:GetDescendants()) do
+        if desc:IsA("TextLabel") and desc.Visible then
+            local txt = string.lower(desc.Text)
+            if txt == "full" or txt == "full!" then
+                local parentFrame = desc.Parent
+                if parentFrame and parentFrame:IsA("GuiObject") and parentFrame.Visible then
+                    return true
+                end
+            end
+            local cur, max = string.match(txt, "^(%d+)%s*/%s*(%d+)$")
+            if cur and max and tonumber(cur) and tonumber(max) and tonumber(max) > 0 then
+                if tonumber(cur) >= tonumber(max) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function CleanFarmPhysics()
     local root = GetRootPart(LocalPlayer)
+    local hum = GetHumanoid(LocalPlayer)
+    if root then
+        local bv = root:FindFirstChild("HarmonyFarmBV")
+        if bv then bv:Destroy() end
+        local bg = root:FindFirstChild("HarmonyFarmBG")
+        if bg then bg:Destroy() end
+        local av = root:FindFirstChild("HarmonyFlingAV")
+        if av then av:Destroy() end
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
     if hum then
         hum.PlatformStand = false
         hum:ChangeState(Enum.HumanoidStateType.GettingUp)
     end
+    local char = GetCharacter(LocalPlayer)
+    if char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and (part.Name == "HumanoidRootPart" or part.Name == "Torso" or part.Name == "UpperTorso" or part.Name == "LowerTorso") then
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+local function ReturnToMapSurface()
+    CleanFarmPhysics()
+    local root = GetRootPart(LocalPlayer)
     if root then
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-        if PreFlingCFrame then
-            root.CFrame = PreFlingCFrame
-            PreFlingCFrame = nil
+        if LastSafeMapPosition then
+            root.CFrame = CFrame.new(LastSafeMapPosition + Vector3.new(0, 4.5, 0))
         else
             root.CFrame = CFrame.new(root.Position + Vector3.new(0, 6, 0))
         end
@@ -156,7 +239,7 @@ local function RestoreCharacter()
 end
 
 -- ============================================================================
--- CRÉATION DE LA FENÊTRE PRINCIPALE (DESIGN PAYSAGE À ONGLETS)
+-- GUI CREATION (ENGLISH INTERFACE + FLOATING "HY" ICON)
 -- ============================================================================
 local OldGui = CoreGui:FindFirstChild("HarmonyObsidianMM2") or (LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("HarmonyObsidianMM2"))
 if OldGui then OldGui:Destroy() end
@@ -169,10 +252,34 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 local ok = pcall(function() ScreenGui.Parent = CoreGui end)
 if not ok then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
 
+-- Draggable "HY" Floating Icon (Visible when minimized)
+local FloatingIcon = Instance.new("TextButton")
+FloatingIcon.Name = "HYFloatingIcon"
+FloatingIcon.Size = UDim2.new(0, 50, 0, 50)
+FloatingIcon.Position = UDim2.new(0.05, 0, 0.2, 0)
+FloatingIcon.BackgroundColor3 = Theme.BgSidebar
+FloatingIcon.Text = "HY"
+FloatingIcon.Font = Enum.Font.GothamBlack
+FloatingIcon.TextSize = 18
+FloatingIcon.TextColor3 = Theme.AccentBright
+FloatingIcon.AutoButtonColor = false
+FloatingIcon.Visible = false
+FloatingIcon.Parent = ScreenGui
+
+local IconCorner = Instance.new("UICorner")
+IconCorner.CornerRadius = UDim.new(0, 12)
+IconCorner.Parent = FloatingIcon
+
+local IconStroke = Instance.new("UIStroke")
+IconStroke.Color = Theme.Accent
+IconStroke.Thickness = 2
+IconStroke.Parent = FloatingIcon
+
+-- Main Window
 local MainWindow = Instance.new("Frame")
 MainWindow.Name = "MainWindow"
-MainWindow.Size = UDim2.new(0, 600, 0, 390)
-MainWindow.Position = UDim2.new(0.5, -300, 0.5, -195)
+MainWindow.Size = UDim2.new(0, 620, 0, 410)
+MainWindow.Position = UDim2.new(0.5, -310, 0.5, -205)
 MainWindow.BackgroundColor3 = Theme.BgMain
 MainWindow.BorderSizePixel = 0
 MainWindow.ClipsDescendants = true
@@ -187,12 +294,10 @@ WinStroke.Color = Theme.Stroke
 WinStroke.Thickness = 1.5
 WinStroke.Parent = MainWindow
 
--- ============================================================================
--- BARRE LATÉRALE (SIDEBAR)
--- ============================================================================
+-- Sidebar
 local Sidebar = Instance.new("Frame")
 Sidebar.Name = "Sidebar"
-Sidebar.Size = UDim2.new(0, 175, 1, 0)
+Sidebar.Size = UDim2.new(0, 180, 1, 0)
 Sidebar.BackgroundColor3 = Theme.BgSidebar
 Sidebar.BorderSizePixel = 0
 Sidebar.Parent = MainWindow
@@ -208,7 +313,6 @@ SideBorder.BackgroundColor3 = Theme.Stroke
 SideBorder.BorderSizePixel = 0
 SideBorder.Parent = Sidebar
 
--- En-tête de la Sidebar
 local BrandTitle = Instance.new("TextLabel")
 BrandTitle.Size = UDim2.new(1, -28, 0, 24)
 BrandTitle.Position = UDim2.new(0, 16, 0, 16)
@@ -231,7 +335,6 @@ SubTitle.TextColor3 = Theme.AccentBright
 SubTitle.TextXAlignment = Enum.TextXAlignment.Left
 SubTitle.Parent = Sidebar
 
--- Conteneur des boutons d'onglets
 local TabButtonsHolder = Instance.new("Frame")
 TabButtonsHolder.Size = UDim2.new(1, -24, 1, -120)
 TabButtonsHolder.Position = UDim2.new(0, 12, 0, 68)
@@ -243,7 +346,6 @@ TabListLayout.Padding = UDim.new(0, 6)
 TabListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 TabListLayout.Parent = TabButtonsHolder
 
--- Badge de signature en bas de la Sidebar
 local FooterCard = Instance.new("Frame")
 FooterCard.Size = UDim2.new(1, -24, 0, 36)
 FooterCard.Position = UDim2.new(0, 12, 1, -48)
@@ -269,17 +371,15 @@ FooterLabel.TextSize = 12
 FooterLabel.TextColor3 = Theme.AccentBright
 FooterLabel.Parent = FooterCard
 
--- ============================================================================
--- ZONE DE CONTENU PRINCIPALE & BARRE SUPÉRIEURE
--- ============================================================================
+-- Top Bar & Pre-Round Role Status
 local TopBar = Instance.new("Frame")
-TopBar.Size = UDim2.new(1, -175, 0, 48)
-TopBar.Position = UDim2.new(0, 175, 0, 0)
+TopBar.Size = UDim2.new(1, -180, 0, 48)
+TopBar.Position = UDim2.new(0, 180, 0, 0)
 TopBar.BackgroundTransparency = 1
 TopBar.Parent = MainWindow
 
 local ActiveTabTitle = Instance.new("TextLabel")
-ActiveTabTitle.Size = UDim2.new(1, -80, 1, 0)
+ActiveTabTitle.Size = UDim2.new(0, 120, 1, 0)
 ActiveTabTitle.Position = UDim2.new(0, 20, 0, 0)
 ActiveTabTitle.BackgroundTransparency = 1
 ActiveTabTitle.Text = "Autofarm"
@@ -288,6 +388,26 @@ ActiveTabTitle.TextSize = 16
 ActiveTabTitle.TextColor3 = Theme.TextPrimary
 ActiveTabTitle.TextXAlignment = Enum.TextXAlignment.Left
 ActiveTabTitle.Parent = TopBar
+
+-- Live Pre-Game Role Detector Badge in TopBar
+local RoleBanner = Instance.new("TextLabel")
+RoleBanner.Size = UDim2.new(1, -200, 0, 26)
+RoleBanner.Position = UDim2.new(0, 135, 0.5, -13)
+RoleBanner.BackgroundColor3 = Theme.BgCard
+RoleBanner.Text = "Murderer: None | Sheriff: None"
+RoleBanner.Font = Enum.Font.GothamMedium
+RoleBanner.TextSize = 11
+RoleBanner.TextColor3 = Theme.TextMuted
+RoleBanner.Parent = TopBar
+
+local RoleBannerCorner = Instance.new("UICorner")
+RoleBannerCorner.CornerRadius = UDim.new(0, 6)
+RoleBannerCorner.Parent = RoleBanner
+
+local RoleBannerStroke = Instance.new("UIStroke")
+RoleBannerStroke.Color = Theme.Stroke
+RoleBannerStroke.Thickness = 1
+RoleBannerStroke.Parent = RoleBanner
 
 local MinimizeBtn = Instance.new("TextButton")
 MinimizeBtn.Size = UDim2.new(0, 28, 0, 28)
@@ -304,12 +424,12 @@ MinCorner.CornerRadius = UDim.new(0, 6)
 MinCorner.Parent = MinimizeBtn
 
 local PagesContainer = Instance.new("Frame")
-PagesContainer.Size = UDim2.new(1, -175, 1, -48)
-PagesContainer.Position = UDim2.new(0, 175, 0, 48)
+PagesContainer.Size = UDim2.new(1, -180, 1, -48)
+PagesContainer.Position = UDim2.new(0, 180, 0, 48)
 PagesContainer.BackgroundTransparency = 1
 PagesContainer.Parent = MainWindow
 
--- Déplacement fluide de la fenêtre (Draggable sur Sidebar et TopBar)
+-- Window Dragging Logic
 local dragging, dragInput, dragStart, startPos
 local function SetupDrag(frame)
     frame.InputBegan:Connect(function(input)
@@ -333,31 +453,60 @@ end
 SetupDrag(Sidebar)
 SetupDrag(TopBar)
 
+-- Floating "HY" Icon Dragging + Click to Reopen
+local iconDragging, iconDragInput, iconDragStart, iconStartPos
+local iconMoved = false
+
+FloatingIcon.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        iconDragging = true
+        iconMoved = false
+        iconDragStart = input.Position
+        iconStartPos = FloatingIcon.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                iconDragging = false
+                if not iconMoved then
+                    FloatingIcon.Visible = false
+                    MainWindow.Visible = true
+                end
+            end
+        end)
+    end
+end)
+
+FloatingIcon.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        iconDragInput = input
+    end
+end)
+
 UserInputService.InputChanged:Connect(function(input)
     if input == dragInput and dragging then
         local delta = input.Position - dragStart
         MainWindow.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    elseif input == iconDragInput and iconDragging then
+        local delta = input.Position - iconDragStart
+        if delta.Magnitude > 5 then
+            iconMoved = true
+        end
+        FloatingIcon.Position = UDim2.new(
+            iconStartPos.X.Scale, iconStartPos.X.Offset + delta.X,
+            iconStartPos.Y.Scale, iconStartPos.Y.Offset + delta.Y
         )
     end
 end)
 
-local isMinimized = false
 MinimizeBtn.MouseButton1Click:Connect(function()
-    isMinimized = not isMinimized
-    PagesContainer.Visible = not isMinimized
-    TabButtonsHolder.Visible = not isMinimized
-    FooterCard.Visible = not isMinimized
-    TweenService:Create(MainWindow, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-        Size = isMinimized and UDim2.new(0, 600, 0, 48) or UDim2.new(0, 600, 0, 390)
-    }):Play()
+    MainWindow.Visible = false
+    FloatingIcon.Visible = true
 end)
 
 -- ============================================================================
--- GESTIONNAIRE D'ONGLETS ET COMPOSANTS D'INTERFACE
+-- UI COMPONENT BUILDERS
 -- ============================================================================
 local Tabs = {}
 
@@ -546,7 +695,7 @@ local function AddSlider(tab, titleText, minVal, maxVal, defaultVal, callback)
     Stroke.Parent = Card
 
     local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(0, 140, 0, 20)
+    Title.Size = UDim2.new(0, 180, 0, 20)
     Title.Position = UDim2.new(0, 14, 0, 8)
     Title.BackgroundTransparency = 1
     Title.Text = titleText
@@ -841,70 +990,162 @@ local function AddKeybind(tab, titleText, defaultText, callback)
 end
 
 -- ============================================================================
--- CRÉATION DES 5 ONGLETS ET REMPLISSAGE DES OPTIONS
+-- SILENT AIM & DIRECT GUN SHOOT LOGIC
 -- ============================================================================
-local TabFarm    = CreateTab("Autofarm", "⚡")
-local TabCombat  = CreateTab("Combat", "🎯")
-local TabTarget  = CreateTab("Ciblage", "👤")
-local TabVisuals = CreateTab("Visuels", "👁")
-local TabServer  = CreateTab("Serveur", "⚙")
+local function GetPredictedMurdererPos()
+    local murderer = FindMurderer()
+    local murdRoot = GetRootPart(murderer)
+    if murdRoot then
+        return murdRoot.Position + (murdRoot.AssemblyLinearVelocity * 0.14)
+    end
+    return nil
+end
 
--- ONGLET 1 : AUTOFARM
-AddToggle(TabFarm, "Auto Farm Pièces (Sous la map)", "Position couchée horizontale, Noclip actif et intouchable", false, false, function(v)
-    Settings.AutoFarmCoins = v
-    table.clear(CollectedCoins)
-    if not v and not Settings.AutoFarmEvents then RestoreCharacter() end
-end)
-
-AddToggle(TabFarm, "Auto Farm Candies & Snowflakes", "Récupère les bonbons Halloween et flocons Noël sous la map", false, false, function(v)
-    Settings.AutoFarmEvents = v
-    table.clear(CollectedCoins)
-    if not v and not Settings.AutoFarmCoins then RestoreCharacter() end
-end)
-
-AddSlider(TabFarm, "Vitesse de déplacement Farm", 14, 35, 24, function(val)
-    Settings.FarmSpeed = val
-end)
-
--- ONGLET 2 : COMBAT
 local function ShootMurdererNow()
     local murderer = FindMurderer()
     local myChar = GetCharacter(LocalPlayer)
     local myRoot = GetRootPart(LocalPlayer)
-    local murdRoot = GetRootPart(murderer)
-    if not (myChar and myRoot and murdRoot) then return end
+    local targetPos = GetPredictedMurdererPos()
+    if not (myChar and myRoot and targetPos) then return end
 
     local gun = myChar:FindFirstChild("Gun") or myChar:FindFirstChild("Revolver")
     if not gun then
-        local bpGun = LocalPlayer.Backpack:FindFirstChild("Gun") or LocalPlayer.Backpack:FindFirstChild("Revolver")
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        local bpGun = bp and (bp:FindFirstChild("Gun") or bp:FindFirstChild("Revolver"))
         local hum = GetHumanoid(LocalPlayer)
         if bpGun and hum then
             hum:EquipTool(bpGun)
-            gun = bpGun
+            task.wait(0.05)
+            gun = myChar:FindFirstChild("Gun") or myChar:FindFirstChild("Revolver") or bpGun
         end
     end
+
     if gun then
-        Camera.CFrame = CFrame.new(Camera.CFrame.Position, murdRoot.Position + murdRoot.AssemblyLinearVelocity * 0.12)
-        gun:Activate()
+        -- 1. Direct MM2 Gun Remote Invocation (True Silent Shoot)
+        local firedRemote = false
+        pcall(function()
+            local createBeam = gun:FindFirstChild("CreateBeam", true)
+            local remoteFunc = createBeam and createBeam:FindFirstChildOfClass("RemoteFunction")
+            if remoteFunc then
+                firedRemote = true
+                task.spawn(function()
+                    remoteFunc:InvokeServer(1, targetPos, "AH2")
+                end)
+            end
+        end)
+
+        -- 2. Fallback instantaneous silent flick if custom gun script is used
+        if not firedRemote then
+            local savedCam = Camera.CFrame
+            Camera.CFrame = CFrame.new(savedCam.Position, targetPos)
+            gun:Activate()
+            task.defer(function()
+                Camera.CFrame = savedCam
+            end)
+        end
     end
 end
 
-AddSlider(TabCombat, "Aura Distance (Portée Couteau)", 1, 30, 5, function(val)
+-- Hook Gun activation so manual left-clicks with Silent Aim enabled hit the Murderer without moving the camera
+local function HookCharacterTools(char)
+    if not char then return end
+    char.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") and (child.Name == "Gun" or child.Name == "Revolver") then
+            child.Activated:Connect(function()
+                if Settings.SilentAim then
+                    local targetPos = GetPredictedMurdererPos()
+                    if targetPos then
+                        pcall(function()
+                            local createBeam = child:FindFirstChild("CreateBeam", true)
+                            local remoteFunc = createBeam and createBeam:FindFirstChildOfClass("RemoteFunction")
+                            if remoteFunc then
+                                remoteFunc:InvokeServer(1, targetPos, "AH2")
+                            end
+                        end)
+                    end
+                end
+            end)
+        end
+    end)
+end
+
+if LocalPlayer.Character then HookCharacterTools(LocalPlayer.Character) end
+LocalPlayer.CharacterAdded:Connect(function(char)
+    table.clear(CollectedCoins)
+    BagFullRestored = false
+    HookCharacterTools(char)
+end)
+
+-- Optional Metamethod Hook for executors supporting hookmetamethod (Redirects Mouse.Hit & CreateBeam)
+pcall(function()
+    if hookmetamethod and getnamecallmethod then
+        local oldNamecall
+        oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+            local method = getnamecallmethod()
+            local args = {...}
+            if Settings.SilentAim and (method == "InvokeServer" or method == "FireServer") and tostring(self) == "RemoteFunction" then
+                if self.Parent and self.Parent.Name == "CreateBeam" then
+                    local targetPos = GetPredictedMurdererPos()
+                    if targetPos then
+                        args[2] = targetPos
+                        return oldNamecall(self, unpack(args))
+                    end
+                end
+            end
+            return oldNamecall(self, ...)
+        end)
+    end
+end)
+
+-- ============================================================================
+-- TABS & OPTIONS (ALL IN ENGLISH)
+-- ============================================================================
+local TabFarm    = CreateTab("Autofarm", "⚡")
+local TabCombat  = CreateTab("Combat", "🎯")
+local TabTarget  = CreateTab("Target", "👤")
+local TabVisuals = CreateTab("Visuals", "👁")
+local TabServer  = CreateTab("Server", "⚙")
+
+-- TAB 1: AUTOFARM
+AddToggle(TabFarm, "Auto Farm Coins (Under Map)", "Prone horizontal posture under the map, ignores lobby", false, false, function(v)
+    Settings.AutoFarmCoins = v
+    table.clear(CollectedCoins)
+    BagFullRestored = false
+    if not v and not Settings.AutoFarmEvents then ReturnToMapSurface() end
+end)
+
+AddToggle(TabFarm, "Auto Farm Candies & Snowflakes", "Collects Halloween candies & Christmas tokens under the map", false, false, function(v)
+    Settings.AutoFarmEvents = v
+    table.clear(CollectedCoins)
+    BagFullRestored = false
+    if not v and not Settings.AutoFarmCoins then ReturnToMapSurface() end
+end)
+
+AddToggle(TabFarm, "Auto Reset When Bag Full", "Automatically resets your character once your coin bag is full", false, false, function(v)
+    Settings.AutoResetAfterFarm = v
+end)
+
+AddSlider(TabFarm, "Farm Movement Speed", 12, 40, 24, function(val)
+    Settings.FarmSpeed = val
+end)
+
+-- TAB 2: COMBAT
+AddSlider(TabCombat, "Knife Aura Distance", 1, 30, 5, function(val)
     Settings.AuraDistance = val
 end)
-AddToggle(TabCombat, "Auto Kill All (Murderer)", "Téléporte les survivants sur votre couteau", false, false, function(v)
+AddToggle(TabCombat, "Auto Kill All (Murderer)", "Brings all surviving players directly to your knife", false, false, function(v)
     Settings.AutoKillAll = v
 end)
-AddToggle(TabCombat, "Silent Aim (Shérif)", "Oriente automatiquement la visée vers le Murderer", false, false, function(v)
+AddToggle(TabCombat, "Silent Aim (Sheriff)", "Redirects your bullets to the Murderer without locking your camera", false, false, function(v)
     Settings.SilentAim = v
 end)
-AddToggle(TabCombat, "Kill Murderer (Blatant)", "Se téléporte derrière le Murderer et tire immédiatement", false, true, function(v)
+AddToggle(TabCombat, "Kill Murderer (Blatant)", "Teleports behind the Murderer and fires immediately", false, true, function(v)
     Settings.KillMurdererBlatant = v
 end)
-AddToggle(TabCombat, "Auto Shoot Murderer", "Tire automatiquement dès que le Murderer est en vue", false, false, function(v)
+AddToggle(TabCombat, "Auto Shoot Murderer", "Automatically shoots as soon as the Murderer is in line of sight", false, false, function(v)
     Settings.AutoShootMurderer = v
 end)
-AddKeybind(TabCombat, "Shoot Murderer (Raccourci)", "None", function(key, triggered)
+AddKeybind(TabCombat, "Shoot Murderer Keybind", "None", function(key, triggered)
     if triggered then
         ShootMurdererNow()
     else
@@ -912,43 +1153,61 @@ AddKeybind(TabCombat, "Shoot Murderer (Raccourci)", "None", function(key, trigge
     end
 end)
 
--- ONGLET 3 : CIBLAGE & FLING
-AddDropdown(TabTarget, "Target (Joueur cible)", function()
+-- TAB 3: TARGET & FLING
+AddDropdown(TabTarget, "Select Target Player", function()
     local list = {}
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer then table.insert(list, p.Name) end
     end
-    return #list > 0 and list or {"Aucun joueur"}
+    return #list > 0 and list or {"No Players"}
 end, function(name)
     Settings.SelectedTarget = Players:FindFirstChild(name)
 end)
 
-AddToggle(TabTarget, "Fling Target", "Projette violemment le joueur sélectionné hors de la map", false, false, function(v)
+AddToggle(TabTarget, "Fling Target", "Physically flings the selected player (works from lobby)", false, false, function(v)
     if v and GetRootPart(LocalPlayer) then PreFlingCFrame = GetRootPart(LocalPlayer).CFrame end
     Settings.FlingTarget = v
-    if not v then RestoreCharacter() end
+    if not v then
+        CleanFarmPhysics()
+        if PreFlingCFrame and GetRootPart(LocalPlayer) then
+            GetRootPart(LocalPlayer).CFrame = PreFlingCFrame
+            PreFlingCFrame = nil
+        end
+    end
 end)
 
-AddToggle(TabTarget, "Fling Murderer", "Détecte et projette automatiquement le Murderer", false, true, function(v)
+AddToggle(TabTarget, "Fling Murderer", "Automatically detects and flings the Murderer", false, true, function(v)
     if v and GetRootPart(LocalPlayer) then PreFlingCFrame = GetRootPart(LocalPlayer).CFrame end
     Settings.FlingMurderer = v
-    if not v then RestoreCharacter() end
+    if not v then
+        CleanFarmPhysics()
+        if PreFlingCFrame and GetRootPart(LocalPlayer) then
+            GetRootPart(LocalPlayer).CFrame = PreFlingCFrame
+            PreFlingCFrame = nil
+        end
+    end
 end)
 
-AddToggle(TabTarget, "Fling Sheriff", "Détecte et projette automatiquement le Shérif", false, false, function(v)
+AddToggle(TabTarget, "Fling Sheriff", "Automatically detects and flings the Sheriff", false, false, function(v)
     if v and GetRootPart(LocalPlayer) then PreFlingCFrame = GetRootPart(LocalPlayer).CFrame end
     Settings.FlingSheriff = v
-    if not v then RestoreCharacter() end
+    if not v then
+        CleanFarmPhysics()
+        if PreFlingCFrame and GetRootPart(LocalPlayer) then
+            GetRootPart(LocalPlayer).CFrame = PreFlingCFrame
+            PreFlingCFrame = nil
+        end
+    end
 end)
 
-AddToggle(TabTarget, "Spectate Target", "Place la caméra sur le joueur sélectionné", false, false, function(v)
+AddToggle(TabTarget, "Spectate Target", "Locks camera view onto the selected player", false, false, function(v)
     Settings.SpectateTarget = v
     if not v and GetHumanoid(LocalPlayer) then
         Camera.CameraSubject = GetHumanoid(LocalPlayer)
     end
 end)
 
-AddToggle(TabTarget, "Loop Go To Target", "Téléportation continue sur la cible", false, false, function(v)
+AddToggle(TabTarget, "Loop Go To Target", "Continuously teleports behind the selected target", false, false, function(v)
     Settings.LoopGoToTarget = v
 end)
 
@@ -960,41 +1219,37 @@ AddButton(TabTarget, "Teleport To Target", function()
     end
 end)
 
--- ONGLET 4 : VISUELS & EMOTES
-AddToggle(TabVisuals, "Player Chams (Rôles)", "Shérif en bleu foncé, Murderer en rouge, Innocent en vert", false, false, function(v)
+-- TAB 4: VISUALS & EMOTES (3D Rendering option removed as requested)
+AddToggle(TabVisuals, "Player Chams (Pre-Round Ready)", "Sheriff in dark blue, Murderer in red, Innocent in green", false, false, function(v)
     Settings.PlayerChams = v
 end)
-AddToggle(TabVisuals, "Name ESP", "Affiche le pseudo et le rôle au-dessus des joueurs", false, false, function(v)
+AddToggle(TabVisuals, "Name ESP (Pre-Round Ready)", "Displays player names and roles during the 10s countdown", false, false, function(v)
     Settings.NameESP = v
 end)
-AddToggle(TabVisuals, "Gun Cham", "Met en évidence le pistolet tombé au sol", false, false, function(v)
+AddToggle(TabVisuals, "Gun Drop Cham", "Highlights the dropped Sheriff gun through walls", false, false, function(v)
     Settings.GunCham = v
 end)
-AddToggle(TabVisuals, "Disable 3D Rendering", "Désactive le rendu 3D pour économiser les FPS pendant le farm", false, false, function(v)
-    Settings.Rendering3D = not v
-    pcall(function() RunService:Set3dRenderingEnabled(Settings.Rendering3D) end)
-end)
-AddDropdown(TabVisuals, "Emote", function() return EmoteList end, function(emote)
+AddDropdown(TabVisuals, "Select Emote", function() return EmoteList end, function(emote)
     Settings.SelectedEmote = emote
 end)
-AddToggle(TabVisuals, "Auto Emote", "Joue l'emote sélectionnée en boucle", false, false, function(v)
+AddToggle(TabVisuals, "Auto Emote", "Plays the selected emote repeatedly", false, false, function(v)
     Settings.AutoEmote = v
 end)
 
--- ONGLET 5 : SERVEUR & CONFIGURATION
-AddToggle(TabServer, "Auto Save Settings", "Sauvegarde automatiquement votre configuration", false, false, function(v)
+-- TAB 5: SERVER & CONFIG
+AddToggle(TabServer, "Auto Save Settings", "Saves your current configuration locally", false, false, function(v)
     Settings.AutoSaveSettings = v
     if v and writefile then
-        pcall(function() writefile("HarmonyObsidianMM2.json", HttpService:JSONEncode(Settings)) end)
+        pcall(function() writefile("HarmonyObsidianMM2_V3.json", HttpService:JSONEncode(Settings)) end)
     end
 end)
-AddToggle(TabServer, "Auto ReExecute", "Relance le script lors d'un changement de serveur", false, false, function(v)
+AddToggle(TabServer, "Auto ReExecute", "Queues script execution on server hop", false, false, function(v)
     Settings.AutoReExecute = v
 end)
-AddToggle(TabServer, "Auto Rejoin", "Rejoint automatiquement en cas de déconnexion", false, false, function(v)
+AddToggle(TabServer, "Auto Rejoin", "Automatically rejoins if kicked or disconnected", false, false, function(v)
     Settings.AutoRejoin = v
 end)
-AddButton(TabServer, "Rejoin Server", function()
+AddButton(TabServer, "Rejoin Current Server", function()
     TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
 end)
 AddButton(TabServer, "Server Hop", function()
@@ -1005,6 +1260,7 @@ AddDropdown(TabServer, "Select Command", function() return CommandList end, func
         GetCharacter(LocalPlayer):BreakJoints()
     elseif cmd == "Toggle UI" then
         MainWindow.Visible = not MainWindow.Visible
+        FloatingIcon.Visible = not MainWindow.Visible
     elseif cmd == "Clear ESP" then
         Settings.PlayerChams = false
         Settings.NameESP = false
@@ -1012,34 +1268,7 @@ AddDropdown(TabServer, "Select Command", function() return CommandList end, func
 end)
 
 -- ============================================================================
--- LOGIQUE 1 : NOCLIP & POSITION COUCHÉE SANS ANIMATION DE MARCHE
--- ============================================================================
-RunService.Stepped:Connect(function()
-    local isFarming = Settings.AutoFarmCoins or Settings.AutoFarmEvents
-    local isFlinging = Settings.FlingTarget or Settings.FlingSheriff or Settings.FlingMurderer
-
-    if isFarming or isFlinging then
-        local myChar = GetCharacter(LocalPlayer)
-        local hum = GetHumanoid(LocalPlayer)
-        if myChar then
-            for _, part in ipairs(myChar:GetDescendants()) do
-                if part:IsA("BasePart") and part.CanCollide then
-                    part.CanCollide = false
-                end
-            end
-        end
-        if isFarming and hum then
-            -- Coupe toute animation de marche et maintient le corps rigide
-            hum.PlatformStand = true
-            for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
-                track:Stop()
-            end
-        end
-    end
-end)
-
--- ============================================================================
--- LOGIQUE 2 : AUTOFARM SOUS LA MAP (PIÈCES, BONBONS, FLOCONS)
+-- SMART AUTOFARM ENGINE (NO VOID DRIFT, LOBBY SAFE, BAG FULL HANDLER)
 -- ============================================================================
 local function GetCoinPart(obj)
     if obj:IsA("BasePart") then return obj end
@@ -1049,128 +1278,55 @@ local function GetCoinPart(obj)
     return nil
 end
 
-local function IsCollectibleAvailable(coinObj)
+local function IsCoinValid(coinObj)
     if not coinObj or not coinObj.Parent then return false end
     if CollectedCoins[coinObj] then return false end
     local part = GetCoinPart(coinObj)
     if not part then return false end
 
-    -- Ignore les pièces déjà ramassées (devenues transparentes)
-    local coinVisual = coinObj:FindFirstChild("CoinVisual")
-    if coinVisual and coinVisual:IsA("BasePart") and coinVisual.Transparency >= 0.95 then
+    local visual = coinObj:FindFirstChild("CoinVisual")
+    if visual and visual:IsA("BasePart") and visual.Transparency >= 0.95 then
         return false
     end
-    if part.Transparency >= 0.95 and not coinVisual then
+    if part.Transparency >= 0.95 and not visual then
         return false
     end
     return true
 end
 
-local function FindNextCollectible()
+local function GetNearestMapCoin(coinContainer)
     local myRoot = GetRootPart(LocalPlayer)
-    if not myRoot then return nil end
+    if not myRoot or not coinContainer then return nil, nil end
 
-    local bestPart = nil
-    local bestObj = nil
+    local bestPart, bestObj = nil, nil
     local minDist = math.huge
 
-    -- 1. Recherche prioritaire dans tous les CoinContainer de la carte active
-    for _, desc in ipairs(Workspace:GetDescendants()) do
-        if desc.Name == "CoinContainer" then
-            for _, child in ipairs(desc:GetChildren()) do
-                if IsCollectibleAvailable(child) then
-                    local part = GetCoinPart(child)
-                    if part then
-                        local d = (part.Position - myRoot.Position).Magnitude
-                        if d < minDist and d < 350 then
-                            minDist = d
-                            bestPart = part
-                            bestObj = child
-                        end
-                    end
-                end
-            end
-        elseif (Settings.AutoFarmEvents or Settings.AutoFarmCoins) and desc:IsA("BasePart") then
-            local lname = string.lower(desc.Name)
-            if (lname == "coin_server" or string.find(lname, "candy") or string.find(lname, "snow")) and IsCollectibleAvailable(desc) then
-                local d = (desc.Position - myRoot.Position).Magnitude
-                if d < minDist and d < 350 then
-                    minDist = d
-                    bestPart = desc
-                    bestObj = desc
+    for _, child in ipairs(coinContainer:GetChildren()) do
+        if IsCoinValid(child) then
+            local part = GetCoinPart(child)
+            if part then
+                local dist = (Vector3.new(part.Position.X, 0, part.Position.Z) - Vector3.new(myRoot.Position.X, 0, myRoot.Position.Z)).Magnitude
+                if dist < minDist then
+                    minDist = dist
+                    bestPart = part
+                    bestObj = child
                 end
             end
         end
     end
-
-    return bestPart, bestObj, minDist
+    return bestPart, bestObj
 end
 
--- Orientation couchée sur le dos/ventre à l'horizontale sous la map
-local ProneRotation = CFrame.Angles(math.rad(90), 0, 0)
+local ProneAngles = CFrame.Angles(math.rad(90), 0, 0)
 
-task.spawn(function()
-    while task.wait(0.1) do
-        if Settings.AutoFarmCoins or Settings.AutoFarmEvents then
-            local myRoot = GetRootPart(LocalPlayer)
-            local targetPart, targetObj, dist = FindNextCollectible()
+-- Real-time Step-by-Step Autofarm + Fling Physics on Heartbeat
+RunService.Heartbeat:Connect(function(dt)
+    local myChar = GetCharacter(LocalPlayer)
+    local myRoot = GetRootPart(LocalPlayer)
+    local hum = GetHumanoid(LocalPlayer)
+    if not (myChar and myRoot and hum and hum.Health > 0) then return end
 
-            if myRoot and targetPart and targetObj then
-                -- Place d'abord le joueur sous le niveau de la pièce en position couchée
-                local underPos = Vector3.new(targetPart.Position.X, targetPart.Position.Y + Settings.UnderMapOffset, targetPart.Position.Z)
-                local currentUnder = Vector3.new(myRoot.Position.X, underPos.Y, myRoot.Position.Z)
-                myRoot.CFrame = CFrame.new(currentUnder) * ProneRotation
-                myRoot.AssemblyLinearVelocity = Vector3.zero
-
-                local duration = math.clamp(dist / Settings.FarmSpeed, 0.12, 2.2)
-                local moveTween = TweenService:Create(
-                    myRoot,
-                    TweenInfo.new(duration, Enum.EasingStyle.Linear),
-                    {CFrame = CFrame.new(underPos) * ProneRotation}
-                )
-                moveTween:Play()
-
-                local elapsed = 0
-                while elapsed < duration and (Settings.AutoFarmCoins or Settings.AutoFarmEvents) do
-                    if not targetObj.Parent then break end
-                    myRoot.AssemblyLinearVelocity = Vector3.zero
-                    elapsed = elapsed + task.wait()
-                end
-                moveTween:Cancel()
-
-                -- Remonte brièvement toucher la hitbox de la pièce en restant couché, puis redescend sous la map
-                if (Settings.AutoFarmCoins or Settings.AutoFarmEvents) and targetPart and targetPart.Parent then
-                    local touchPos = Vector3.new(targetPart.Position.X, targetPart.Position.Y - 0.5, targetPart.Position.Z)
-                    myRoot.CFrame = CFrame.new(touchPos) * ProneRotation
-
-                    if firetouchinterest then
-                        pcall(function()
-                            firetouchinterest(myRoot, targetPart, 0)
-                            firetouchinterest(myRoot, targetPart, 1)
-                        end)
-                    end
-                    task.wait(0.12)
-
-                    -- Marque la pièce comme collectée pour passer immédiatement à la suivante
-                    CollectedCoins[targetObj] = true
-
-                    -- Redescend en sécurité sous la carte
-                    local safePos = Vector3.new(touchPos.X, touchPos.Y + Settings.SafeWaitDepth, touchPos.Z)
-                    myRoot.CFrame = CFrame.new(safePos) * ProneRotation
-                end
-            elseif myRoot then
-                -- S'il n'y a aucune pièce proche, reste allongé en sécurité sous la map
-                myRoot.AssemblyLinearVelocity = Vector3.zero
-                myRoot.CFrame = CFrame.new(myRoot.Position.X, myRoot.Position.Y, myRoot.Position.Z) * ProneRotation
-            end
-        end
-    end
-end)
-
--- ============================================================================
--- LOGIQUE 3 : SYSTÈME DE FLING PHYSIQUE (TARGET, SHERIFF, MURDERER)
--- ============================================================================
-RunService.Heartbeat:Connect(function()
+    -- 1. WALKFLING ENGINE (Works on players inside the match even from the lobby)
     local flingSubject = nil
     if Settings.FlingTarget and Settings.SelectedTarget then
         flingSubject = Settings.SelectedTarget
@@ -1181,29 +1337,157 @@ RunService.Heartbeat:Connect(function()
     end
 
     if flingSubject then
-        local myRoot = GetRootPart(LocalPlayer)
         local targetRoot = GetRootPart(flingSubject)
-        local hum = GetHumanoid(LocalPlayer)
-        if myRoot and targetRoot then
-            if hum then hum.PlatformStand = true end
-            -- Prédiction du mouvement de la cible + oscillation rapide à travers son HumanoidRootPart
-            local offset = Vector3.new(math.random(-1, 1) * 0.5, 0, math.random(-1, 1) * 0.5)
-            local predictedPos = targetRoot.Position + (targetRoot.AssemblyLinearVelocity * 0.08) + offset
-            myRoot.CFrame = CFrame.new(predictedPos)
-            myRoot.AssemblyLinearVelocity = Vector3.new(9e5, 9e5, 9e5)
-            myRoot.AssemblyAngularVelocity = Vector3.new(9e5, 9e5, 9e5)
+        local targetHum = GetHumanoid(flingSubject)
+        if targetRoot and (not targetHum or targetHum.Health > 0) then
+            hum.PlatformStand = false
+            hum:ChangeState(Enum.HumanoidStateType.Physics)
+
+            -- Keep collision ON for core parts so impulse hits target in the map
+            for _, part in ipairs(myChar:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = (part.Name == "HumanoidRootPart" or part.Name == "Torso" or part.Name == "UpperTorso")
+                end
+            end
+
+            local av = myRoot:FindFirstChild("HarmonyFlingAV")
+            if not av then
+                av = Instance.new("BodyAngularVelocity")
+                av.Name = "HarmonyFlingAV"
+                av.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+                av.AngularVelocity = Vector3.new(99999, 99999, 99999)
+                av.P = 9e9
+                av.Parent = myRoot
+            end
+
+            -- Rapidly sweep across the target's velocity path to force collision registration
+            local phase = math.sin(os.clock() * 45) * 1.8
+            local predicted = targetRoot.Position + (targetRoot.AssemblyLinearVelocity * 0.1) + Vector3.new(phase, 0, -phase)
+            myRoot.CFrame = CFrame.new(predicted) * CFrame.Angles(math.rad(math.random(0, 360)), math.rad(math.random(0, 360)), 0)
+            myRoot.AssemblyLinearVelocity = Vector3.new(9e4, 9e4, 9e4)
+            return
+        end
+    else
+        local av = myRoot:FindFirstChild("HarmonyFlingAV")
+        if av then av:Destroy() end
+    end
+
+    -- 2. SMART AUTOFARM ENGINE
+    if Settings.AutoFarmCoins or Settings.AutoFarmEvents then
+        local coinContainer = FindActiveCoinContainer()
+
+        -- Do nothing in the lobby when no active map CoinContainer exists
+        if not coinContainer then
+            if myRoot:FindFirstChild("HarmonyFarmBV") then
+                CleanFarmPhysics()
+            end
+            BagFullRestored = false
+            return
+        end
+
+        -- Check if the player's Coin/Candy bag is full
+        if IsBagFull() then
+            if not BagFullRestored then
+                BagFullRestored = true
+                if Settings.AutoResetAfterFarm then
+                    CleanFarmPhysics()
+                    myChar:BreakJoints()
+                else
+                    -- Return player safely onto the map surface so they can play the rest of the round
+                    ReturnToMapSurface()
+                end
+            end
+            return
+        end
+
+        local targetPart, targetObj = GetNearestMapCoin(coinContainer)
+        if not targetPart then
+            -- No coins spawned right now: hover safely right below the last valid map floor (never sink into void)
+            if LastSafeMapPosition then
+                local holdPos = Vector3.new(LastSafeMapPosition.X, LastSafeMapPosition.Y + Settings.UnderMapOffset, LastSafeMapPosition.Z)
+                myRoot.CFrame = CFrame.new(holdPos) * ProneAngles
+                myRoot.AssemblyLinearVelocity = Vector3.zero
+            end
+            return
+        end
+
+        -- Noclip + Anti-Gravity BodyMovers so character never drifts into the void
+        for _, part in ipairs(myChar:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = false end
+        end
+        hum.PlatformStand = true
+        for _, track in ipairs(hum:GetPlayingAnimationTracks()) do track:Stop() end
+
+        local bv = myRoot:FindFirstChild("HarmonyFarmBV")
+        if not bv then
+            bv = Instance.new("BodyVelocity")
+            bv.Name = "HarmonyFarmBV"
+            bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+            bv.Velocity = Vector3.zero
+            bv.Parent = myRoot
+        end
+
+        local bg = myRoot:FindFirstChild("HarmonyFarmBG")
+        if not bg then
+            bg = Instance.new("BodyGyro")
+            bg.Name = "HarmonyFarmBG"
+            bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+            bg.P = 9e4
+            bg.CFrame = ProneAngles
+            bg.Parent = myRoot
+        end
+
+        LastSafeMapPosition = targetPart.Position
+        local goalUnderPos = Vector3.new(targetPart.Position.X, targetPart.Position.Y + Settings.UnderMapOffset, targetPart.Position.Z)
+        local currentPos = myRoot.Position
+
+        -- If the player is still far away (e.g. just spawned), snap under the map floor first
+        local flatDist = (Vector3.new(goalUnderPos.X, 0, goalUnderPos.Z) - Vector3.new(currentPos.X, 0, currentPos.Z)).Magnitude
+        if flatDist > 180 then
+            myRoot.CFrame = CFrame.new(goalUnderPos) * ProneAngles
+            return
+        end
+
+        -- Move smoothly at exact Settings.FarmSpeed (studs/sec) at the coin's under-map Y level
+        local alignedStart = Vector3.new(currentPos.X, goalUnderPos.Y, currentPos.Z)
+        local stepDist = Settings.FarmSpeed * dt
+
+        if flatDist <= math.max(stepDist * 1.5, 1.8) then
+            -- Reached the coin: touch it from slightly underneath while staying prone
+            local touchCFrame = CFrame.new(targetPart.Position.X, targetPart.Position.Y - 0.6, targetPart.Position.Z) * ProneAngles
+            myRoot.CFrame = touchCFrame
+            if firetouchinterest then
+                pcall(function()
+                    firetouchinterest(myRoot, targetPart, 0)
+                    firetouchinterest(myRoot, targetPart, 1)
+                end)
+            end
+            CollectedCoins[targetObj] = true
+        else
+            local dir = (goalUnderPos - alignedStart).Unit
+            local nextPos = alignedStart + (dir * stepDist)
+            myRoot.CFrame = CFrame.new(nextPos) * ProneAngles
         end
     end
 end)
 
 -- ============================================================================
--- LOGIQUE 4 : COMBAT, ESP (SHÉRIF BLEU FONCÉ) ET BOUCLE VISUELLE
+-- VISUALS, PRE-GAME ROLE BANNER & COMBAT RENDER LOOP
 -- ============================================================================
 RunService.RenderStepped:Connect(function()
     local myChar = GetCharacter(LocalPlayer)
     local myRoot = GetRootPart(LocalPlayer)
 
-    -- Spectate
+    -- Update Pre-Round Role Banner in TopBar (works during the 10s countdown)
+    local murdPlayer = FindMurderer()
+    local sherPlayer = FindSheriff()
+    RoleBanner.Text = string.format(
+        "Murderer: %s  |  Sheriff: %s",
+        murdPlayer and murdPlayer.Name or "Waiting...",
+        sherPlayer and sherPlayer.Name or "Waiting..."
+    )
+
+    -- Spectate Target
     if Settings.SpectateTarget and Settings.SelectedTarget then
         local tHum = GetHumanoid(Settings.SelectedTarget)
         if tHum then Camera.CameraSubject = tHum end
@@ -1230,10 +1514,9 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- Combat Shérif
-    local murderer = FindMurderer()
-    if murderer and myRoot then
-        local murdRoot = GetRootPart(murderer)
+    -- Sheriff Combat (Blatant Kill & Auto Shoot)
+    if murdPlayer and myRoot then
+        local murdRoot = GetRootPart(murdPlayer)
         if murdRoot then
             if Settings.KillMurdererBlatant then
                 myRoot.CFrame = murdRoot.CFrame * CFrame.new(0, 0, 5)
@@ -1243,16 +1526,14 @@ RunService.RenderStepped:Connect(function()
                 params.FilterDescendantsInstances = {myChar}
                 params.FilterType = Enum.RaycastFilterType.Exclude
                 local ray = Workspace:Raycast(myRoot.Position, murdRoot.Position - myRoot.Position, params)
-                if ray and ray.Instance and ray.Instance:IsDescendantOf(murderer.Character) then
+                if ray and ray.Instance and ray.Instance:IsDescendantOf(murdPlayer.Character) then
                     ShootMurdererNow()
                 end
-            elseif Settings.SilentAim and GetPlayerRole(LocalPlayer) == "Sheriff" then
-                Camera.CFrame = CFrame.new(Camera.CFrame.Position, murdRoot.Position)
             end
         end
     end
 
-    -- ESP Joueurs (Shérif en Bleu Foncé #1D4ED8)
+    -- Player Chams & Name ESP (Sheriff in Dark Blue #1D4ED8)
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer and p.Character then
             local char = p.Character
@@ -1261,7 +1542,7 @@ RunService.RenderStepped:Connect(function()
             if role == "Murderer" then
                 roleColor = Theme.MurdererESP
             elseif role == "Sheriff" then
-                roleColor = Theme.SheriffESP -- Bleu foncé
+                roleColor = Theme.SheriffESP
             end
 
             local hl = char:FindFirstChild("HarmonyCham")
@@ -1309,7 +1590,7 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- Gun Drop ESP
+    -- Gun Drop Cham
     local gunDrop = Workspace:FindFirstChild("GunDrop", true)
     if gunDrop and gunDrop:IsA("BasePart") then
         local gCham = gunDrop:FindFirstChild("HarmonyGunCham")
@@ -1328,7 +1609,7 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- Auto Emote
+-- Auto Emote Loop
 task.spawn(function()
     while task.wait(2.5) do
         if Settings.AutoEmote then
