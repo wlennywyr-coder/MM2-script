@@ -1,6 +1,6 @@
 -- ============================================================================
--- MM2 MIKU EDITION - MADE BY HARMONY
--- Script Luau tout-en-un (Interface Graphique + Logique)
+-- MM2 OBSIDIAN SUITE - MADE BY HARMONY
+-- Interface Moderne à Onglets (Sidebar) + Autofarm Sous la Map + Fling + ESP
 -- ============================================================================
 
 local Players = game:GetService("Players")
@@ -17,17 +17,23 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
 -- ============================================================================
--- PALETTE DE COULEURS (THÈME HATSUNE MIKU)
+-- PALETTE DE COULEURS (THÈME OBSIDIAN & INDIGO ÉLÉGANT)
 -- ============================================================================
 local Theme = {
-    Background = Color3.fromHex("#111827"),     -- Bleu nuit profond
-    Panel = Color3.fromHex("#1A202C"),          -- Bleu gris sombre pour les cartes
-    Element = Color3.fromHex("#242C3D"),        -- Fond des contrôles
-    Cyan = Color3.fromHex("#39C5BB"),           -- Turquoise emblématique Miku
-    Magenta = Color3.fromHex("#FF6699"),        -- Rose magenta (alertes / 01)
-    TextPrimary = Color3.fromHex("#F9FAFB"),    -- Blanc cassé
-    TextSecondary = Color3.fromHex("#9CA3AF"),  -- Gris clair
-    Divider = Color3.fromHex("#2D3748")         -- Ligne de séparation
+    BgMain       = Color3.fromHex("#0D0F17"), -- Fond principal très sombre
+    BgSidebar    = Color3.fromHex("#11141F"), -- Barre latérale
+    BgCard       = Color3.fromHex("#161A27"), -- Cartes d'options
+    BgControl    = Color3.fromHex("#202638"), -- Fond des boutons/switches désactivés
+    Stroke       = Color3.fromHex("#262D42"), -- Bordures subtiles
+    Accent       = Color3.fromHex("#6366F1"), -- Bleu Indigo moderne
+    AccentBright = Color3.fromHex("#818CF8"), -- Indigo clair (survol / texte)
+    Danger       = Color3.fromHex("#F43F5E"), -- Rouge corail doux (options Blatant)
+    TextPrimary  = Color3.fromHex("#F8FAFC"), -- Blanc pur
+    TextMuted    = Color3.fromHex("#94A3B8"), -- Gris bleuté
+    -- Couleurs ESP
+    SheriffESP   = Color3.fromHex("#1D4ED8"), -- Bleu foncé demandé pour le Shérif
+    MurdererESP  = Color3.fromHex("#EF4444"), -- Rouge pour le Murderer
+    InnocentESP  = Color3.fromHex("#10B981")  -- Vert émeraude pour les Innocents
 }
 
 -- ============================================================================
@@ -36,8 +42,11 @@ local Theme = {
 local Settings = {
     -- Autofarm
     AutoFarmCoins = false,
-    AutoFarmEvents = false, -- Bonbons (Halloween) & Flocons (Noël)
-    
+    AutoFarmEvents = false,
+    FarmSpeed = 24,
+    UnderMapOffset = -3.2,
+    SafeWaitDepth = -8.5,
+
     -- Combat
     AuraDistance = 5,
     AutoKillAll = false,
@@ -45,14 +54,15 @@ local Settings = {
     KillMurdererBlatant = false,
     AutoShootMurderer = false,
     ShootMurdererKey = Enum.KeyCode.Unknown,
-    
-    -- Target
+
+    -- Ciblage & Fling
     SelectedTarget = nil,
     FlingTarget = false,
     SpectateTarget = false,
     LoopGoToTarget = false,
     FlingSheriff = false,
-    
+    FlingMurderer = false,
+
     -- Visuels & Emotes
     PlayerChams = false,
     GunCham = false,
@@ -60,8 +70,8 @@ local Settings = {
     NameESP = false,
     SelectedEmote = "ninja",
     AutoEmote = false,
-    
-    -- Serveur & Config
+
+    -- Serveur
     AutoSaveSettings = false,
     AutoReExecute = false,
     AutoRejoin = false,
@@ -69,10 +79,12 @@ local Settings = {
 }
 
 local EmoteList = {"ninja", "zen", "floss", "dab", "sit", "headless"}
-local CommandList = {"Reset Character", "Clear ESP", "Refresh Players", "Toggle UI"}
+local CommandList = {"Reset Character", "Clear ESP", "Toggle UI"}
+local CollectedCoins = {}
+local PreFlingCFrame = nil
 
 -- ============================================================================
--- FONCTIONS UTILITAIRES MM2 (RÔLES & CIBLES)
+-- FONCTIONS UTILITAIRES MM2
 -- ============================================================================
 local function GetCharacter(player)
     return player and player.Character
@@ -81,6 +93,11 @@ end
 local function GetRootPart(player)
     local char = GetCharacter(player)
     return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function GetHumanoid(player)
+    local char = GetCharacter(player)
+    return char and char:FindFirstChildOfClass("Humanoid")
 end
 
 local function HasItem(player, itemName)
@@ -119,139 +136,207 @@ local function FindSheriff()
     return nil
 end
 
+local function RestoreCharacter()
+    local hum = GetHumanoid(LocalPlayer)
+    local root = GetRootPart(LocalPlayer)
+    if hum then
+        hum.PlatformStand = false
+        hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+    end
+    if root then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        if PreFlingCFrame then
+            root.CFrame = PreFlingCFrame
+            PreFlingCFrame = nil
+        else
+            root.CFrame = CFrame.new(root.Position + Vector3.new(0, 6, 0))
+        end
+    end
+end
+
 -- ============================================================================
--- CRÉATION DE L'INTERFACE GRAPHIQUE (GUI)
+-- CRÉATION DE LA FENÊTRE PRINCIPALE (DESIGN PAYSAGE À ONGLETS)
 -- ============================================================================
+local OldGui = CoreGui:FindFirstChild("HarmonyObsidianMM2") or (LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("HarmonyObsidianMM2"))
+if OldGui then OldGui:Destroy() end
+
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "HarmonyMikuMM2"
+ScreenGui.Name = "HarmonyObsidianMM2"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
-local successParent = pcall(function()
-    ScreenGui.Parent = CoreGui
-end)
-if not successParent then
-    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-end
+local ok = pcall(function() ScreenGui.Parent = CoreGui end)
+if not ok then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
 
--- Fenêtre principale
-local MainFrame = Instance.new("Frame")
-MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 420, 0, 540)
-MainFrame.Position = UDim2.new(0.5, -210, 0.5, -270)
-MainFrame.BackgroundColor3 = Theme.Background
-MainFrame.BorderSizePixel = 0
-MainFrame.ClipsDescendants = true
-MainFrame.Parent = ScreenGui
+local MainWindow = Instance.new("Frame")
+MainWindow.Name = "MainWindow"
+MainWindow.Size = UDim2.new(0, 600, 0, 390)
+MainWindow.Position = UDim2.new(0.5, -300, 0.5, -195)
+MainWindow.BackgroundColor3 = Theme.BgMain
+MainWindow.BorderSizePixel = 0
+MainWindow.ClipsDescendants = true
+MainWindow.Parent = ScreenGui
 
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 12)
-MainCorner.Parent = MainFrame
+local WinCorner = Instance.new("UICorner")
+WinCorner.CornerRadius = UDim.new(0, 12)
+WinCorner.Parent = MainWindow
 
-local MainStroke = Instance.new("UIStroke")
-MainStroke.Color = Theme.Cyan
-MainStroke.Thickness = 1.8
-MainStroke.Transparency = 0.15
-MainStroke.Parent = MainFrame
+local WinStroke = Instance.new("UIStroke")
+WinStroke.Color = Theme.Stroke
+WinStroke.Thickness = 1.5
+WinStroke.Parent = MainWindow
 
--- En-tête (Barre de titre)
-local Header = Instance.new("Frame")
-Header.Name = "Header"
-Header.Size = UDim2.new(1, 0, 0, 52)
-Header.BackgroundColor3 = Theme.Panel
-Header.BorderSizePixel = 0
-Header.Parent = MainFrame
+-- ============================================================================
+-- BARRE LATÉRALE (SIDEBAR)
+-- ============================================================================
+local Sidebar = Instance.new("Frame")
+Sidebar.Name = "Sidebar"
+Sidebar.Size = UDim2.new(0, 175, 1, 0)
+Sidebar.BackgroundColor3 = Theme.BgSidebar
+Sidebar.BorderSizePixel = 0
+Sidebar.Parent = MainWindow
 
-local HeaderCorner = Instance.new("UICorner")
-HeaderCorner.CornerRadius = UDim.new(0, 12)
-HeaderCorner.Parent = Header
+local SideCorner = Instance.new("UICorner")
+SideCorner.CornerRadius = UDim.new(0, 12)
+SideCorner.Parent = Sidebar
 
--- Motif "01" discret de Hatsune Miku
-local MikuBadge = Instance.new("TextLabel")
-MikuBadge.Name = "MikuBadge"
-MikuBadge.Size = UDim2.new(0, 40, 0, 36)
-MikuBadge.Position = UDim2.new(0, 12, 0, 8)
-MikuBadge.BackgroundTransparency = 1
-MikuBadge.Text = "01"
-MikuBadge.Font = Enum.Font.GothamBlack
-MikuBadge.TextSize = 24
-MikuBadge.TextColor3 = Theme.Magenta
-MikuBadge.TextTransparency = 0.15
-MikuBadge.Parent = Header
+local SideBorder = Instance.new("Frame")
+SideBorder.Size = UDim2.new(0, 1, 1, 0)
+SideBorder.Position = UDim2.new(1, -1, 0, 0)
+SideBorder.BackgroundColor3 = Theme.Stroke
+SideBorder.BorderSizePixel = 0
+SideBorder.Parent = Sidebar
 
--- Titre principal
-local TitleLabel = Instance.new("TextLabel")
-TitleLabel.Size = UDim2.new(0, 220, 0, 22)
-TitleLabel.Position = UDim2.new(0, 54, 0, 7)
-TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "MM2 • MIKU PROJECT"
-TitleLabel.Font = Enum.Font.GothamBold
-TitleLabel.TextSize = 15
-TitleLabel.TextColor3 = Theme.TextPrimary
-TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
-TitleLabel.Parent = Header
+-- En-tête de la Sidebar
+local BrandTitle = Instance.new("TextLabel")
+BrandTitle.Size = UDim2.new(1, -28, 0, 24)
+BrandTitle.Position = UDim2.new(0, 16, 0, 16)
+BrandTitle.BackgroundTransparency = 1
+BrandTitle.Text = "HARMONY HUB"
+BrandTitle.Font = Enum.Font.GothamBlack
+BrandTitle.TextSize = 16
+BrandTitle.TextColor3 = Theme.TextPrimary
+BrandTitle.TextXAlignment = Enum.TextXAlignment.Left
+BrandTitle.Parent = Sidebar
 
--- Signature obligatoire : "Made by Harmony" avec dégradé cyan et blanc
-local SignatureLabel = Instance.new("TextLabel")
-SignatureLabel.Name = "Signature"
-SignatureLabel.Size = UDim2.new(0, 220, 0, 18)
-SignatureLabel.Position = UDim2.new(0, 54, 0, 27)
-SignatureLabel.BackgroundTransparency = 1
-SignatureLabel.Text = "Made by Harmony"
-SignatureLabel.Font = Enum.Font.GothamBold
-SignatureLabel.TextSize = 12
-SignatureLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-SignatureLabel.TextXAlignment = Enum.TextXAlignment.Left
-SignatureLabel.Parent = Header
+local SubTitle = Instance.new("TextLabel")
+SubTitle.Size = UDim2.new(1, -28, 0, 16)
+SubTitle.Position = UDim2.new(0, 16, 0, 38)
+SubTitle.BackgroundTransparency = 1
+SubTitle.Text = "Murder Mystery 2"
+SubTitle.Font = Enum.Font.GothamMedium
+SubTitle.TextSize = 12
+SubTitle.TextColor3 = Theme.AccentBright
+SubTitle.TextXAlignment = Enum.TextXAlignment.Left
+SubTitle.Parent = Sidebar
 
-local SignatureGradient = Instance.new("UIGradient")
-SignatureGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Theme.Cyan),
-    ColorSequenceKeypoint.new(0.6, Color3.fromRGB(255, 255, 255)),
-    ColorSequenceKeypoint.new(1, Theme.Cyan)
-})
-SignatureGradient.Parent = SignatureLabel
+-- Conteneur des boutons d'onglets
+local TabButtonsHolder = Instance.new("Frame")
+TabButtonsHolder.Size = UDim2.new(1, -24, 1, -120)
+TabButtonsHolder.Position = UDim2.new(0, 12, 0, 68)
+TabButtonsHolder.BackgroundTransparency = 1
+TabButtonsHolder.Parent = Sidebar
 
--- Bouton réduire/fermer
+local TabListLayout = Instance.new("UIListLayout")
+TabListLayout.Padding = UDim.new(0, 6)
+TabListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+TabListLayout.Parent = TabButtonsHolder
+
+-- Badge de signature en bas de la Sidebar
+local FooterCard = Instance.new("Frame")
+FooterCard.Size = UDim2.new(1, -24, 0, 36)
+FooterCard.Position = UDim2.new(0, 12, 1, -48)
+FooterCard.BackgroundColor3 = Theme.BgCard
+FooterCard.BorderSizePixel = 0
+FooterCard.Parent = Sidebar
+
+local FooterCorner = Instance.new("UICorner")
+FooterCorner.CornerRadius = UDim.new(0, 8)
+FooterCorner.Parent = FooterCard
+
+local FooterStroke = Instance.new("UIStroke")
+FooterStroke.Color = Theme.Stroke
+FooterStroke.Thickness = 1
+FooterStroke.Parent = FooterCard
+
+local FooterLabel = Instance.new("TextLabel")
+FooterLabel.Size = UDim2.new(1, 0, 1, 0)
+FooterLabel.BackgroundTransparency = 1
+FooterLabel.Text = "✦ Made by Harmony"
+FooterLabel.Font = Enum.Font.GothamBold
+FooterLabel.TextSize = 12
+FooterLabel.TextColor3 = Theme.AccentBright
+FooterLabel.Parent = FooterCard
+
+-- ============================================================================
+-- ZONE DE CONTENU PRINCIPALE & BARRE SUPÉRIEURE
+-- ============================================================================
+local TopBar = Instance.new("Frame")
+TopBar.Size = UDim2.new(1, -175, 0, 48)
+TopBar.Position = UDim2.new(0, 175, 0, 0)
+TopBar.BackgroundTransparency = 1
+TopBar.Parent = MainWindow
+
+local ActiveTabTitle = Instance.new("TextLabel")
+ActiveTabTitle.Size = UDim2.new(1, -80, 1, 0)
+ActiveTabTitle.Position = UDim2.new(0, 20, 0, 0)
+ActiveTabTitle.BackgroundTransparency = 1
+ActiveTabTitle.Text = "Autofarm"
+ActiveTabTitle.Font = Enum.Font.GothamBold
+ActiveTabTitle.TextSize = 16
+ActiveTabTitle.TextColor3 = Theme.TextPrimary
+ActiveTabTitle.TextXAlignment = Enum.TextXAlignment.Left
+ActiveTabTitle.Parent = TopBar
+
 local MinimizeBtn = Instance.new("TextButton")
-MinimizeBtn.Size = UDim2.new(0, 30, 0, 30)
-MinimizeBtn.Position = UDim2.new(1, -42, 0, 11)
-MinimizeBtn.BackgroundColor3 = Theme.Element
+MinimizeBtn.Size = UDim2.new(0, 28, 0, 28)
+MinimizeBtn.Position = UDim2.new(1, -42, 0.5, -14)
+MinimizeBtn.BackgroundColor3 = Theme.BgCard
 MinimizeBtn.Text = "—"
 MinimizeBtn.Font = Enum.Font.GothamBold
-MinimizeBtn.TextSize = 14
-MinimizeBtn.TextColor3 = Theme.Cyan
-MinimizeBtn.Parent = Header
+MinimizeBtn.TextSize = 13
+MinimizeBtn.TextColor3 = Theme.TextMuted
+MinimizeBtn.Parent = TopBar
 
 local MinCorner = Instance.new("UICorner")
 MinCorner.CornerRadius = UDim.new(0, 6)
 MinCorner.Parent = MinimizeBtn
 
--- Système Draggable (Déplacement fluide de la fenêtre)
-local dragging, dragInput, dragStart, startPos
-Header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = MainFrame.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
+local PagesContainer = Instance.new("Frame")
+PagesContainer.Size = UDim2.new(1, -175, 1, -48)
+PagesContainer.Position = UDim2.new(0, 175, 0, 48)
+PagesContainer.BackgroundTransparency = 1
+PagesContainer.Parent = MainWindow
 
-Header.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
+-- Déplacement fluide de la fenêtre (Draggable sur Sidebar et TopBar)
+local dragging, dragInput, dragStart, startPos
+local function SetupDrag(frame)
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainWindow.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    frame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+end
+SetupDrag(Sidebar)
+SetupDrag(TopBar)
 
 UserInputService.InputChanged:Connect(function(input)
     if input == dragInput and dragging then
         local delta = input.Position - dragStart
-        MainFrame.Position = UDim2.new(
+        MainWindow.Position = UDim2.new(
             startPos.X.Scale,
             startPos.X.Offset + delta.X,
             startPos.Y.Scale,
@@ -260,171 +345,247 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Conteneur défilant pour toutes les options
-local ScrollContainer = Instance.new("ScrollingFrame")
-ScrollContainer.Name = "ScrollContainer"
-ScrollContainer.Size = UDim2.new(1, -20, 1, -68)
-ScrollContainer.Position = UDim2.new(0, 10, 0, 58)
-ScrollContainer.BackgroundTransparency = 1
-ScrollContainer.BorderSizePixel = 0
-ScrollContainer.ScrollBarThickness = 4
-ScrollContainer.ScrollBarImageColor3 = Theme.Cyan
-ScrollContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
-ScrollContainer.AutomaticCanvasSize = Enum.AutomaticSize.Y
-ScrollContainer.Parent = MainFrame
-
-local UIList = Instance.new("UIListLayout")
-UIList.Padding = UDim.new(0, 8)
-UIList.SortOrder = Enum.SortOrder.LayoutOrder
-UIList.Parent = ScrollContainer
-
-local UIPadding = Instance.new("UIPadding")
-UIPadding.PaddingTop = UDim.new(0, 4)
-UIPadding.PaddingBottom = UDim.new(0, 12)
-UIPadding.PaddingLeft = UDim.new(0, 4)
-UIPadding.PaddingRight = UDim.new(0, 8)
-UIPadding.Parent = ScrollContainer
-
 local isMinimized = false
 MinimizeBtn.MouseButton1Click:Connect(function()
     isMinimized = not isMinimized
-    ScrollContainer.Visible = not isMinimized
-    TweenService:Create(MainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {
-        Size = isMinimized and UDim2.new(0, 420, 0, 52) or UDim2.new(0, 420, 0, 540)
+    PagesContainer.Visible = not isMinimized
+    TabButtonsHolder.Visible = not isMinimized
+    FooterCard.Visible = not isMinimized
+    TweenService:Create(MainWindow, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        Size = isMinimized and UDim2.new(0, 600, 0, 48) or UDim2.new(0, 600, 0, 390)
     }):Play()
 end)
 
 -- ============================================================================
--- COMPOSANTS D'INTERFACE (TOGGLES, SLIDERS, DROPDOWNS, BOUTONS, KEYBINDS)
+-- GESTIONNAIRE D'ONGLETS ET COMPOSANTS D'INTERFACE
 -- ============================================================================
-local LayoutCounter = 0
-local function NextOrder()
-    LayoutCounter = LayoutCounter + 1
-    return LayoutCounter
-end
+local Tabs = {}
 
-local function CreateSectionHeader(title)
-    local SectionLabel = Instance.new("TextLabel")
-    SectionLabel.Size = UDim2.new(1, 0, 0, 24)
-    SectionLabel.BackgroundTransparency = 1
-    SectionLabel.Text = string.upper(title)
-    SectionLabel.Font = Enum.Font.GothamBold
-    SectionLabel.TextSize = 12
-    SectionLabel.TextColor3 = Theme.Cyan
-    SectionLabel.TextXAlignment = Enum.TextXAlignment.Left
-    SectionLabel.LayoutOrder = NextOrder()
-    SectionLabel.Parent = ScrollContainer
-end
+local function CreateTab(tabName, iconText)
+    local TabBtn = Instance.new("TextButton")
+    TabBtn.Size = UDim2.new(1, 0, 0, 36)
+    TabBtn.BackgroundColor3 = Theme.BgCard
+    TabBtn.BackgroundTransparency = 1
+    TabBtn.Text = ""
+    TabBtn.AutoButtonColor = false
+    TabBtn.Parent = TabButtonsHolder
 
-local function CreateDivider()
-    local Divider = Instance.new("Frame")
-    Divider.Size = UDim2.new(1, 0, 0, 1)
-    Divider.BackgroundColor3 = Theme.Divider
-    Divider.BorderSizePixel = 0
-    Divider.LayoutOrder = NextOrder()
-    Divider.Parent = ScrollContainer
-end
+    local BtnCorner = Instance.new("UICorner")
+    BtnCorner.CornerRadius = UDim.new(0, 8)
+    BtnCorner.Parent = TabBtn
 
--- Interrupteur (Toggle)
-local function CreateToggle(labelText, defaultState, isBlatant, callback)
-    local Row = Instance.new("Frame")
-    Row.Size = UDim2.new(1, 0, 0, 38)
-    Row.BackgroundColor3 = Theme.Panel
-    Row.BorderSizePixel = 0
-    Row.LayoutOrder = NextOrder()
-    Row.Parent = ScrollContainer
+    local Indicator = Instance.new("Frame")
+    Indicator.Size = UDim2.new(0, 3, 0, 18)
+    Indicator.Position = UDim2.new(0, 0, 0.5, -9)
+    Indicator.BackgroundColor3 = Theme.Accent
+    Indicator.BorderSizePixel = 0
+    Indicator.Visible = false
+    Indicator.Parent = TabBtn
 
-    local RowCorner = Instance.new("UICorner")
-    RowCorner.CornerRadius = UDim.new(0, 8)
-    RowCorner.Parent = Row
+    local IndCorner = Instance.new("UICorner")
+    IndCorner.CornerRadius = UDim.new(1, 0)
+    IndCorner.Parent = Indicator
 
     local Label = Instance.new("TextLabel")
-    Label.Size = UDim2.new(1, -90, 1, 0)
-    Label.Position = UDim2.new(0, 12, 0, 0)
+    Label.Size = UDim2.new(1, -24, 1, 0)
+    Label.Position = UDim2.new(0, 14, 0, 0)
     Label.BackgroundTransparency = 1
-    Label.Text = labelText
+    Label.Text = iconText .. "   " .. tabName
     Label.Font = Enum.Font.GothamMedium
-    Label.TextSize = 14
-    Label.TextColor3 = isBlatant and Theme.Magenta or Theme.TextPrimary
+    Label.TextSize = 13
+    Label.TextColor3 = Theme.TextMuted
     Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Parent = Row
+    Label.Parent = TabBtn
 
-    local SwitchBg = Instance.new("TextButton")
-    SwitchBg.Size = UDim2.new(0, 46, 0, 24)
-    SwitchBg.Position = UDim2.new(1, -58, 0.5, -12)
-    SwitchBg.BackgroundColor3 = defaultState and Theme.Cyan or Theme.Element
-    SwitchBg.Text = ""
-    SwitchBg.AutoButtonColor = false
-    SwitchBg.Parent = Row
+    local Page = Instance.new("ScrollingFrame")
+    Page.Name = tabName .. "Page"
+    Page.Size = UDim2.new(1, 0, 1, 0)
+    Page.BackgroundTransparency = 1
+    Page.BorderSizePixel = 0
+    Page.ScrollBarThickness = 3
+    Page.ScrollBarImageColor3 = Theme.Accent
+    Page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Page.Visible = false
+    Page.Parent = PagesContainer
 
-    local SwitchCorner = Instance.new("UICorner")
-    SwitchCorner.CornerRadius = UDim.new(1, 0)
-    SwitchCorner.Parent = SwitchBg
+    local PageLayout = Instance.new("UIListLayout")
+    PageLayout.Padding = UDim.new(0, 8)
+    PageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    PageLayout.Parent = Page
 
-    local Knob = Instance.new("Frame")
-    Knob.Size = UDim2.new(0, 18, 0, 18)
-    Knob.Position = defaultState and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
-    Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    Knob.BorderSizePixel = 0
-    Knob.Parent = SwitchBg
+    local PagePadding = Instance.new("UIPadding")
+    PagePadding.PaddingTop = UDim.new(0, 4)
+    PagePadding.PaddingBottom = UDim.new(0, 16)
+    PagePadding.PaddingLeft = UDim.new(0, 20)
+    PagePadding.PaddingRight = UDim.new(0, 20)
+    PagePadding.Parent = Page
 
-    local KnobCorner = Instance.new("UICorner")
-    KnobCorner.CornerRadius = UDim.new(1, 0)
-    KnobCorner.Parent = Knob
+    local tabData = {Button = TabBtn, Label = Label, Indicator = Indicator, Page = Page, Order = 0}
+    table.insert(Tabs, tabData)
+
+    local function Activate()
+        for _, t in ipairs(Tabs) do
+            t.Page.Visible = false
+            t.Indicator.Visible = false
+            t.Label.TextColor3 = Theme.TextMuted
+            t.Label.Font = Enum.Font.GothamMedium
+            TweenService:Create(t.Button, TweenInfo.new(0.15), {BackgroundTransparency = 1}):Play()
+        end
+        Page.Visible = true
+        Indicator.Visible = true
+        Label.TextColor3 = Theme.TextPrimary
+        Label.Font = Enum.Font.GothamBold
+        ActiveTabTitle.Text = tabName
+        TweenService:Create(TabBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0}):Play()
+    end
+
+    TabBtn.MouseButton1Click:Connect(Activate)
+    if #Tabs == 1 then Activate() end
+
+    return tabData
+end
+
+local function NextOrder(tab)
+    tab.Order = tab.Order + 1
+    return tab.Order
+end
+
+local function AddToggle(tab, titleText, subtitleText, defaultState, isDanger, callback)
+    local Card = Instance.new("Frame")
+    Card.Size = UDim2.new(1, 0, 0, subtitleText and 52 or 42)
+    Card.BackgroundColor3 = Theme.BgCard
+    Card.BorderSizePixel = 0
+    Card.LayoutOrder = NextOrder(tab)
+    Card.Parent = tab.Page
+
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 8)
+    Corner.Parent = Card
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Theme.Stroke
+    Stroke.Thickness = 1
+    Stroke.Parent = Card
+
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, -80, 0, 20)
+    Title.Position = UDim2.new(0, 14, 0, subtitleText and 8 or 11)
+    Title.BackgroundTransparency = 1
+    Title.Text = titleText
+    Title.Font = Enum.Font.GothamSemibold
+    Title.TextSize = 13
+    Title.TextColor3 = isDanger and Theme.Danger or Theme.TextPrimary
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = Card
+
+    if subtitleText then
+        local Sub = Instance.new("TextLabel")
+        Sub.Size = UDim2.new(1, -80, 0, 16)
+        Sub.Position = UDim2.new(0, 14, 0, 28)
+        Sub.BackgroundTransparency = 1
+        Sub.Text = subtitleText
+        Sub.Font = Enum.Font.Gotham
+        Sub.TextSize = 11
+        Sub.TextColor3 = Theme.TextMuted
+        Sub.TextXAlignment = Enum.TextXAlignment.Left
+        Sub.Parent = Card
+    end
+
+    local Switch = Instance.new("TextButton")
+    Switch.Size = UDim2.new(0, 44, 0, 22)
+    Switch.Position = UDim2.new(1, -56, 0.5, -11)
+    Switch.BackgroundColor3 = defaultState and Theme.Accent or Theme.BgControl
+    Switch.Text = ""
+    Switch.AutoButtonColor = false
+    Switch.Parent = Card
+
+    local SwCorner = Instance.new("UICorner")
+    SwCorner.CornerRadius = UDim.new(1, 0)
+    SwCorner.Parent = Switch
+
+    local Dot = Instance.new("Frame")
+    Dot.Size = UDim2.new(0, 16, 0, 16)
+    Dot.Position = defaultState and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
+    Dot.BackgroundColor3 = Theme.TextPrimary
+    Dot.BorderSizePixel = 0
+    Dot.Parent = Switch
+
+    local DotCorner = Instance.new("UICorner")
+    DotCorner.CornerRadius = UDim.new(1, 0)
+    DotCorner.Parent = Dot
 
     local state = defaultState
-    SwitchBg.MouseButton1Click:Connect(function()
+    Switch.MouseButton1Click:Connect(function()
         state = not state
-        TweenService:Create(SwitchBg, TweenInfo.new(0.18), {
-            BackgroundColor3 = state and Theme.Cyan or Theme.Element
+        TweenService:Create(Switch, TweenInfo.new(0.18), {
+            BackgroundColor3 = state and (isDanger and Theme.Danger or Theme.Accent) or Theme.BgControl
         }):Play()
-        TweenService:Create(Knob, TweenInfo.new(0.18), {
-            Position = state and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+        TweenService:Create(Dot, TweenInfo.new(0.18), {
+            Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
         }):Play()
         callback(state)
     end)
 end
 
--- Curseur numérique (Slider)
-local function CreateSlider(labelText, minVal, maxVal, defaultVal, callback)
-    local Row = Instance.new("Frame")
-    Row.Size = UDim2.new(1, 0, 0, 44)
-    Row.BackgroundColor3 = Theme.Panel
-    Row.BorderSizePixel = 0
-    Row.LayoutOrder = NextOrder()
-    Row.Parent = ScrollContainer
+local function AddSlider(tab, titleText, minVal, maxVal, defaultVal, callback)
+    local Card = Instance.new("Frame")
+    Card.Size = UDim2.new(1, 0, 0, 50)
+    Card.BackgroundColor3 = Theme.BgCard
+    Card.BorderSizePixel = 0
+    Card.LayoutOrder = NextOrder(tab)
+    Card.Parent = tab.Page
 
-    local RowCorner = Instance.new("UICorner")
-    RowCorner.CornerRadius = UDim.new(0, 8)
-    RowCorner.Parent = Row
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 8)
+    Corner.Parent = Card
 
-    local Label = Instance.new("TextLabel")
-    Label.Size = UDim2.new(0, 115, 1, 0)
-    Label.Position = UDim2.new(0, 12, 0, 0)
-    Label.BackgroundTransparency = 1
-    Label.Text = labelText
-    Label.Font = Enum.Font.GothamMedium
-    Label.TextSize = 14
-    Label.TextColor3 = Theme.TextPrimary
-    Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Parent = Row
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Theme.Stroke
+    Stroke.Thickness = 1
+    Stroke.Parent = Card
+
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(0, 140, 0, 20)
+    Title.Position = UDim2.new(0, 14, 0, 8)
+    Title.BackgroundTransparency = 1
+    Title.Text = titleText
+    Title.Font = Enum.Font.GothamSemibold
+    Title.TextSize = 13
+    Title.TextColor3 = Theme.TextPrimary
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = Card
+
+    local ValueBadge = Instance.new("TextLabel")
+    ValueBadge.Size = UDim2.new(0, 44, 0, 20)
+    ValueBadge.Position = UDim2.new(1, -58, 0, 8)
+    ValueBadge.BackgroundColor3 = Theme.BgControl
+    ValueBadge.Text = tostring(defaultVal)
+    ValueBadge.Font = Enum.Font.GothamBold
+    ValueBadge.TextSize = 12
+    ValueBadge.TextColor3 = Theme.AccentBright
+    ValueBadge.Parent = Card
+
+    local BadgeCorner = Instance.new("UICorner")
+    BadgeCorner.CornerRadius = UDim.new(0, 5)
+    BadgeCorner.Parent = ValueBadge
 
     local Track = Instance.new("Frame")
-    Track.Size = UDim2.new(1, -195, 0, 6)
-    Track.Position = UDim2.new(0, 125, 0.5, -3)
-    Track.BackgroundColor3 = Theme.Element
+    Track.Size = UDim2.new(1, -28, 0, 6)
+    Track.Position = UDim2.new(0, 14, 0, 34)
+    Track.BackgroundColor3 = Theme.BgControl
     Track.BorderSizePixel = 0
-    Track.Parent = Row
+    Track.Parent = Card
 
     local TrackCorner = Instance.new("UICorner")
     TrackCorner.CornerRadius = UDim.new(1, 0)
     TrackCorner.Parent = Track
 
-    local initialRatio = math.clamp((defaultVal - minVal) / (maxVal - minVal), 0, 1)
+    local ratio = math.clamp((defaultVal - minVal) / (maxVal - minVal), 0, 1)
 
     local Fill = Instance.new("Frame")
-    Fill.Size = UDim2.new(initialRatio, 0, 1, 0)
-    Fill.BackgroundColor3 = Theme.Cyan
+    Fill.Size = UDim2.new(ratio, 0, 1, 0)
+    Fill.BackgroundColor3 = Theme.Accent
     Fill.BorderSizePixel = 0
     Fill.Parent = Track
 
@@ -432,84 +593,61 @@ local function CreateSlider(labelText, minVal, maxVal, defaultVal, callback)
     FillCorner.CornerRadius = UDim.new(1, 0)
     FillCorner.Parent = Fill
 
-    local Thumb = Instance.new("Frame")
-    Thumb.Size = UDim2.new(0, 14, 0, 14)
-    Thumb.Position = UDim2.new(initialRatio, -7, 0.5, -7)
-    Thumb.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    Thumb.BorderSizePixel = 0
-    Thumb.Parent = Track
+    local Knob = Instance.new("Frame")
+    Knob.Size = UDim2.new(0, 12, 0, 12)
+    Knob.Position = UDim2.new(ratio, -6, 0.5, -6)
+    Knob.BackgroundColor3 = Theme.TextPrimary
+    Knob.BorderSizePixel = 0
+    Knob.Parent = Track
 
-    local ThumbCorner = Instance.new("UICorner")
-    ThumbCorner.CornerRadius = UDim.new(1, 0)
-    ThumbCorner.Parent = Thumb
-
-    local ValueBox = Instance.new("TextLabel")
-    ValueBox.Size = UDim2.new(0, 48, 0, 26)
-    ValueBox.Position = UDim2.new(1, -60, 0.5, -13)
-    ValueBox.BackgroundColor3 = Theme.Element
-    ValueBox.Text = tostring(defaultVal)
-    ValueBox.Font = Enum.Font.GothamBold
-    ValueBox.TextSize = 13
-    ValueBox.TextColor3 = Theme.Cyan
-    ValueBox.Parent = Row
-
-    local BoxCorner = Instance.new("UICorner")
-    BoxCorner.CornerRadius = UDim.new(0, 6)
-    BoxCorner.Parent = ValueBox
-
-    local BoxStroke = Instance.new("UIStroke")
-    BoxStroke.Color = Theme.Divider
-    BoxStroke.Thickness = 1
-    BoxStroke.Parent = ValueBox
+    local KnobCorner = Instance.new("UICorner")
+    KnobCorner.CornerRadius = UDim.new(1, 0)
+    KnobCorner.Parent = Knob
 
     local sliding = false
-    local function UpdateSlider(input)
-        local rel = math.clamp((input.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
-        local value = math.floor(minVal + (maxVal - minVal) * rel)
-        Fill.Size = UDim2.new(rel, 0, 1, 0)
-        Thumb.Position = UDim2.new(rel, -7, 0.5, -7)
-        ValueBox.Text = tostring(value)
-        callback(value)
+    local function Update(input)
+        local r = math.clamp((input.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
+        local val = math.floor(minVal + (maxVal - minVal) * r)
+        Fill.Size = UDim2.new(r, 0, 1, 0)
+        Knob.Position = UDim2.new(r, -6, 0.5, -6)
+        ValueBadge.Text = tostring(val)
+        callback(val)
     end
 
     Track.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             sliding = true
-            UpdateSlider(input)
+            Update(input)
         end
     end)
-
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             sliding = false
         end
     end)
-
     UserInputService.InputChanged:Connect(function(input)
         if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            UpdateSlider(input)
+            Update(input)
         end
     end)
 end
 
--- Menu déroulant avec icône de grille (Dropdown)
-local function CreateDropdown(prefixText, getOptionsFunc, callback)
+local function AddDropdown(tab, titleText, getOptionsFunc, callback)
     local Container = Instance.new("Frame")
     Container.Size = UDim2.new(1, 0, 0, 42)
-    Container.BackgroundColor3 = Theme.Panel
+    Container.BackgroundColor3 = Theme.BgCard
     Container.BorderSizePixel = 0
     Container.ClipsDescendants = true
-    Container.LayoutOrder = NextOrder()
-    Container.Parent = ScrollContainer
+    Container.LayoutOrder = NextOrder(tab)
+    Container.Parent = tab.Page
 
     local Corner = Instance.new("UICorner")
     Corner.CornerRadius = UDim.new(0, 8)
     Corner.Parent = Container
 
     local Stroke = Instance.new("UIStroke")
-    Stroke.Color = Theme.Cyan
+    Stroke.Color = Theme.Stroke
     Stroke.Thickness = 1
-    Stroke.Transparency = 0.45
     Stroke.Parent = Container
 
     local HeaderBtn = Instance.new("TextButton")
@@ -518,194 +656,183 @@ local function CreateDropdown(prefixText, getOptionsFunc, callback)
     HeaderBtn.Text = ""
     HeaderBtn.Parent = Container
 
-    local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(1, -50, 1, 0)
-    Title.Position = UDim2.new(0, 14, 0, 0)
-    Title.BackgroundTransparency = 1
-    Title.Text = prefixText
-    Title.Font = Enum.Font.GothamMedium
-    Title.TextSize = 14
-    Title.TextColor3 = Theme.TextSecondary
-    Title.TextXAlignment = Enum.TextXAlignment.Left
-    Title.Parent = HeaderBtn
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, -50, 1, 0)
+    Label.Position = UDim2.new(0, 14, 0, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = titleText
+    Label.Font = Enum.Font.GothamSemibold
+    Label.TextSize = 13
+    Label.TextColor3 = Theme.TextPrimary
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = HeaderBtn
 
-    -- Icône de grille 3x3
-    local GridIcon = Instance.new("Frame")
-    GridIcon.Size = UDim2.new(0, 18, 0, 18)
-    GridIcon.Position = UDim2.new(1, -32, 0.5, -9)
-    GridIcon.BackgroundTransparency = 1
-    GridIcon.Parent = HeaderBtn
+    local Chevron = Instance.new("TextLabel")
+    Chevron.Size = UDim2.new(0, 24, 1, 0)
+    Chevron.Position = UDim2.new(1, -34, 0, 0)
+    Chevron.BackgroundTransparency = 1
+    Chevron.Text = "▾"
+    Chevron.Font = Enum.Font.GothamBold
+    Chevron.TextSize = 15
+    Chevron.TextColor3 = Theme.AccentBright
+    Chevron.Parent = HeaderBtn
 
-    local GridLayout = Instance.new("UIGridLayout")
-    GridLayout.CellSize = UDim2.new(0, 4, 0, 4)
-    GridLayout.CellPadding = UDim2.new(0, 2, 0, 2)
-    GridLayout.Parent = GridIcon
+    local ListHolder = Instance.new("Frame")
+    ListHolder.Size = UDim2.new(1, -20, 0, 0)
+    ListHolder.Position = UDim2.new(0, 10, 0, 44)
+    ListHolder.BackgroundTransparency = 1
+    ListHolder.Parent = Container
 
-    for _ = 1, 9 do
-        local Dot = Instance.new("Frame")
-        Dot.BackgroundColor3 = Theme.Cyan
-        Dot.BorderSizePixel = 0
-        Dot.Parent = GridIcon
-    end
+    local Layout = Instance.new("UIListLayout")
+    Layout.Padding = UDim.new(0, 4)
+    Layout.Parent = ListHolder
 
-    local OptionHolder = Instance.new("Frame")
-    OptionHolder.Size = UDim2.new(1, -16, 0, 0)
-    OptionHolder.Position = UDim2.new(0, 8, 0, 44)
-    OptionHolder.BackgroundTransparency = 1
-    OptionHolder.Parent = Container
-
-    local OptionList = Instance.new("UIListLayout")
-    OptionList.Padding = UDim.new(0, 4)
-    OptionList.Parent = OptionHolder
-
-    local isOpen = false
+    local open = false
     HeaderBtn.MouseButton1Click:Connect(function()
-        isOpen = not isOpen
-        for _, child in ipairs(OptionHolder:GetChildren()) do
-            if child:IsA("TextButton") then
-                child:Destroy()
-            end
+        open = not open
+        Chevron.Text = open and "▴" or "▾"
+        for _, child in ipairs(ListHolder:GetChildren()) do
+            if child:IsA("TextButton") then child:Destroy() end
         end
 
-        if isOpen then
-            local options = getOptionsFunc()
-            for _, opt in ipairs(options) do
+        if open then
+            local opts = getOptionsFunc()
+            for _, opt in ipairs(opts) do
                 local OptBtn = Instance.new("TextButton")
                 OptBtn.Size = UDim2.new(1, 0, 0, 28)
-                OptBtn.BackgroundColor3 = Theme.Element
+                OptBtn.BackgroundColor3 = Theme.BgControl
                 OptBtn.Text = tostring(opt)
-                OptBtn.Font = Enum.Font.Gotham
-                OptBtn.TextSize = 13
+                OptBtn.Font = Enum.Font.GothamMedium
+                OptBtn.TextSize = 12
                 OptBtn.TextColor3 = Theme.TextPrimary
-                OptBtn.Parent = OptionHolder
+                OptBtn.Parent = ListHolder
 
                 local OptCorner = Instance.new("UICorner")
                 OptCorner.CornerRadius = UDim.new(0, 6)
                 OptCorner.Parent = OptBtn
 
                 OptBtn.MouseButton1Click:Connect(function()
-                    Title.Text = prefixText .. " • " .. tostring(opt)
-                    Title.TextColor3 = Theme.TextPrimary
-                    isOpen = false
+                    Label.Text = titleText .. " :  " .. tostring(opt)
+                    open = false
+                    Chevron.Text = "▾"
                     Container.Size = UDim2.new(1, 0, 0, 42)
                     callback(opt)
                 end)
             end
-            local totalHeight = 48 + (#options * 32)
-            Container.Size = UDim2.new(1, 0, 0, math.min(totalHeight, 210))
+            Container.Size = UDim2.new(1, 0, 0, math.min(48 + (#opts * 32), 200))
         else
             Container.Size = UDim2.new(1, 0, 0, 42)
         end
     end)
 end
 
--- Bouton d'action avec flèche ">"
-local function CreateActionButton(labelText, callback)
+local function AddButton(tab, titleText, callback)
     local Btn = Instance.new("TextButton")
-    Btn.Size = UDim2.new(1, 0, 0, 38)
-    Btn.BackgroundColor3 = Theme.Panel
+    Btn.Size = UDim2.new(1, 0, 0, 40)
+    Btn.BackgroundColor3 = Theme.BgCard
     Btn.Text = ""
     Btn.AutoButtonColor = false
-    Btn.LayoutOrder = NextOrder()
-    Btn.Parent = ScrollContainer
+    Btn.LayoutOrder = NextOrder(tab)
+    Btn.Parent = tab.Page
 
     local Corner = Instance.new("UICorner")
     Corner.CornerRadius = UDim.new(0, 8)
     Corner.Parent = Btn
 
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Theme.Stroke
+    Stroke.Thickness = 1
+    Stroke.Parent = Btn
+
     local Label = Instance.new("TextLabel")
     Label.Size = UDim2.new(1, -45, 1, 0)
-    Label.Position = UDim2.new(0, 12, 0, 0)
+    Label.Position = UDim2.new(0, 14, 0, 0)
     Label.BackgroundTransparency = 1
-    Label.Text = labelText
-    Label.Font = Enum.Font.GothamMedium
-    Label.TextSize = 14
+    Label.Text = titleText
+    Label.Font = Enum.Font.GothamSemibold
+    Label.TextSize = 13
     Label.TextColor3 = Theme.TextPrimary
     Label.TextXAlignment = Enum.TextXAlignment.Left
     Label.Parent = Btn
 
     local Arrow = Instance.new("TextLabel")
     Arrow.Size = UDim2.new(0, 24, 1, 0)
-    Arrow.Position = UDim2.new(1, -32, 0, 0)
+    Arrow.Position = UDim2.new(1, -34, 0, 0)
     Arrow.BackgroundTransparency = 1
-    Arrow.Text = ">"
+    Arrow.Text = "→"
     Arrow.Font = Enum.Font.GothamBold
-    Arrow.TextSize = 16
-    Arrow.TextColor3 = Theme.Cyan
+    Arrow.TextSize = 15
+    Arrow.TextColor3 = Theme.AccentBright
     Arrow.Parent = Btn
 
     Btn.MouseButton1Click:Connect(function()
-        TweenService:Create(Btn, TweenInfo.new(0.12), {BackgroundColor3 = Theme.Element}):Play()
+        TweenService:Create(Btn, TweenInfo.new(0.12), {BackgroundColor3 = Theme.BgControl}):Play()
         task.delay(0.12, function()
-            TweenService:Create(Btn, TweenInfo.new(0.12), {BackgroundColor3 = Theme.Panel}):Play()
+            TweenService:Create(Btn, TweenInfo.new(0.12), {BackgroundColor3 = Theme.BgCard}):Play()
         end)
         callback()
     end)
 end
 
--- Bouton de raccourci clavier (Keybind)
-local function CreateKeybind(labelText, defaultKeyName, callback)
-    local Row = Instance.new("Frame")
-    Row.Size = UDim2.new(1, 0, 0, 38)
-    Row.BackgroundColor3 = Theme.Panel
-    Row.BorderSizePixel = 0
-    Row.LayoutOrder = NextOrder()
-    Row.Parent = ScrollContainer
+local function AddKeybind(tab, titleText, defaultText, callback)
+    local Card = Instance.new("Frame")
+    Card.Size = UDim2.new(1, 0, 0, 42)
+    Card.BackgroundColor3 = Theme.BgCard
+    Card.BorderSizePixel = 0
+    Card.LayoutOrder = NextOrder(tab)
+    Card.Parent = tab.Page
 
     local Corner = Instance.new("UICorner")
     Corner.CornerRadius = UDim.new(0, 8)
-    Corner.Parent = Row
+    Corner.Parent = Card
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Theme.Stroke
+    Stroke.Thickness = 1
+    Stroke.Parent = Card
 
     local Label = Instance.new("TextLabel")
     Label.Size = UDim2.new(1, -100, 1, 0)
-    Label.Position = UDim2.new(0, 12, 0, 0)
+    Label.Position = UDim2.new(0, 14, 0, 0)
     Label.BackgroundTransparency = 1
-    Label.Text = labelText
-    Label.Font = Enum.Font.GothamMedium
-    Label.TextSize = 14
+    Label.Text = titleText
+    Label.Font = Enum.Font.GothamSemibold
+    Label.TextSize = 13
     Label.TextColor3 = Theme.TextPrimary
     Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Parent = Row
+    Label.Parent = Card
 
     local KeyBtn = Instance.new("TextButton")
-    KeyBtn.Size = UDim2.new(0, 68, 0, 26)
-    KeyBtn.Position = UDim2.new(1, -80, 0.5, -13)
-    KeyBtn.BackgroundColor3 = Theme.Element
-    KeyBtn.Text = defaultKeyName
+    KeyBtn.Size = UDim2.new(0, 72, 0, 26)
+    KeyBtn.Position = UDim2.new(1, -84, 0.5, -13)
+    KeyBtn.BackgroundColor3 = Theme.BgControl
+    KeyBtn.Text = defaultText
     KeyBtn.Font = Enum.Font.GothamBold
     KeyBtn.TextSize = 12
-    KeyBtn.TextColor3 = Theme.TextSecondary
-    KeyBtn.Parent = Row
+    KeyBtn.TextColor3 = Theme.AccentBright
+    KeyBtn.Parent = Card
 
     local KeyCorner = Instance.new("UICorner")
     KeyCorner.CornerRadius = UDim.new(0, 6)
     KeyCorner.Parent = KeyBtn
 
-    local KeyStroke = Instance.new("UIStroke")
-    KeyStroke.Color = Theme.Divider
-    KeyStroke.Thickness = 1
-    KeyStroke.Parent = KeyBtn
-
-    local waitingForKey = false
+    local binding = false
     KeyBtn.MouseButton1Click:Connect(function()
-        waitingForKey = true
+        binding = true
         KeyBtn.Text = "..."
-        KeyBtn.TextColor3 = Theme.Cyan
     end)
 
-    UserInputService.InputBegan:Connect(function(input, gameProcessed)
-        if waitingForKey and input.UserInputType == Enum.UserInputType.Keyboard then
-            waitingForKey = false
+    UserInputService.InputBegan:Connect(function(input, gpe)
+        if binding and input.UserInputType == Enum.UserInputType.Keyboard then
+            binding = false
             if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
                 KeyBtn.Text = "None"
-                KeyBtn.TextColor3 = Theme.TextSecondary
-                callback(Enum.KeyCode.Unknown)
+                callback(Enum.KeyCode.Unknown, false)
             else
                 KeyBtn.Text = input.KeyCode.Name
-                KeyBtn.TextColor3 = Theme.Cyan
-                callback(input.KeyCode)
+                callback(input.KeyCode, false)
             end
-        elseif not gameProcessed and input.UserInputType == Enum.UserInputType.Keyboard then
+        elseif not gpe and input.UserInputType == Enum.UserInputType.Keyboard then
             if Settings.ShootMurdererKey ~= Enum.KeyCode.Unknown and input.KeyCode == Settings.ShootMurdererKey then
                 callback(input.KeyCode, true)
             end
@@ -714,39 +841,33 @@ local function CreateKeybind(labelText, defaultKeyName, callback)
 end
 
 -- ============================================================================
--- CONSTRUCTION DES SECTIONS DU MENU
+-- CRÉATION DES 5 ONGLETS ET REMPLISSAGE DES OPTIONS
 -- ============================================================================
+local TabFarm    = CreateTab("Autofarm", "⚡")
+local TabCombat  = CreateTab("Combat", "🎯")
+local TabTarget  = CreateTab("Ciblage", "👤")
+local TabVisuals = CreateTab("Visuels", "👁")
+local TabServer  = CreateTab("Serveur", "⚙")
 
--- 1. AUTOFARM (ÉVÉNEMENTS ET MONNAIES)
-CreateSectionHeader("1. Autofarm • Monnaies & Événements")
-CreateToggle("Auto Farm Coins (Pièces)", false, false, function(v)
+-- ONGLET 1 : AUTOFARM
+AddToggle(TabFarm, "Auto Farm Pièces (Sous la map)", "Position couchée horizontale, Noclip actif et intouchable", false, false, function(v)
     Settings.AutoFarmCoins = v
+    table.clear(CollectedCoins)
+    if not v and not Settings.AutoFarmEvents then RestoreCharacter() end
 end)
-CreateToggle("Auto Farm Candies & Snowflakes (Events)", false, false, function(v)
+
+AddToggle(TabFarm, "Auto Farm Candies & Snowflakes", "Récupère les bonbons Halloween et flocons Noël sous la map", false, false, function(v)
     Settings.AutoFarmEvents = v
-end)
-CreateDivider()
-
--- 2. COMBAT (SHÉRIF ET MURDERER)
-CreateSectionHeader("2. Combat • Shérif & Murderer")
-CreateSlider("Aura Distance", 1, 30, 5, function(val)
-    Settings.AuraDistance = val
-end)
-CreateToggle("Auto Kill All", false, false, function(v)
-    Settings.AutoKillAll = v
-end)
-CreateDivider()
-CreateToggle("Silent Aim", false, false, function(v)
-    Settings.SilentAim = v
-end)
-CreateToggle("Kill Murderer (Blatant)", false, true, function(v)
-    Settings.KillMurdererBlatant = v
-end)
-CreateToggle("Auto Shoot Murderer", false, false, function(v)
-    Settings.AutoShootMurderer = v
+    table.clear(CollectedCoins)
+    if not v and not Settings.AutoFarmCoins then RestoreCharacter() end
 end)
 
-local function ShootAtMurderer()
+AddSlider(TabFarm, "Vitesse de déplacement Farm", 14, 35, 24, function(val)
+    Settings.FarmSpeed = val
+end)
+
+-- ONGLET 2 : COMBAT
+local function ShootMurdererNow()
     local murderer = FindMurderer()
     local myChar = GetCharacter(LocalPlayer)
     local myRoot = GetRootPart(LocalPlayer)
@@ -756,269 +877,374 @@ local function ShootAtMurderer()
     local gun = myChar:FindFirstChild("Gun") or myChar:FindFirstChild("Revolver")
     if not gun then
         local bpGun = LocalPlayer.Backpack:FindFirstChild("Gun") or LocalPlayer.Backpack:FindFirstChild("Revolver")
-        if bpGun and myChar:FindFirstChildOfClass("Humanoid") then
-            myChar.Humanoid:EquipTool(bpGun)
+        local hum = GetHumanoid(LocalPlayer)
+        if bpGun and hum then
+            hum:EquipTool(bpGun)
             gun = bpGun
         end
     end
-
     if gun then
-        Camera.CFrame = CFrame.new(Camera.CFrame.Position, murdRoot.Position)
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, murdRoot.Position + murdRoot.AssemblyLinearVelocity * 0.12)
         gun:Activate()
     end
 end
 
-CreateKeybind("Shoot Murderer", "None", function(keyCode, triggered)
+AddSlider(TabCombat, "Aura Distance (Portée Couteau)", 1, 30, 5, function(val)
+    Settings.AuraDistance = val
+end)
+AddToggle(TabCombat, "Auto Kill All (Murderer)", "Téléporte les survivants sur votre couteau", false, false, function(v)
+    Settings.AutoKillAll = v
+end)
+AddToggle(TabCombat, "Silent Aim (Shérif)", "Oriente automatiquement la visée vers le Murderer", false, false, function(v)
+    Settings.SilentAim = v
+end)
+AddToggle(TabCombat, "Kill Murderer (Blatant)", "Se téléporte derrière le Murderer et tire immédiatement", false, true, function(v)
+    Settings.KillMurdererBlatant = v
+end)
+AddToggle(TabCombat, "Auto Shoot Murderer", "Tire automatiquement dès que le Murderer est en vue", false, false, function(v)
+    Settings.AutoShootMurderer = v
+end)
+AddKeybind(TabCombat, "Shoot Murderer (Raccourci)", "None", function(key, triggered)
     if triggered then
-        ShootAtMurderer()
+        ShootMurdererNow()
     else
-        Settings.ShootMurdererKey = keyCode
+        Settings.ShootMurdererKey = key
     end
 end)
-CreateDivider()
 
--- 3. CIBLAGE ET TÉLÉPORTATION
-CreateSectionHeader("3. Ciblage & Téléportation")
-CreateDropdown("Target", function()
-    local names = {}
+-- ONGLET 3 : CIBLAGE & FLING
+AddDropdown(TabTarget, "Target (Joueur cible)", function()
+    local list = {}
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
-            table.insert(names, p.Name)
-        end
+        if p ~= LocalPlayer then table.insert(list, p.Name) end
     end
-    return #names > 0 and names or {"Aucun joueur"}
-end, function(selectedName)
-    Settings.SelectedTarget = Players:FindFirstChild(selectedName)
+    return #list > 0 and list or {"Aucun joueur"}
+end, function(name)
+    Settings.SelectedTarget = Players:FindFirstChild(name)
 end)
 
-CreateToggle("Fling Target", false, false, function(v)
+AddToggle(TabTarget, "Fling Target", "Projette violemment le joueur sélectionné hors de la map", false, false, function(v)
+    if v and GetRootPart(LocalPlayer) then PreFlingCFrame = GetRootPart(LocalPlayer).CFrame end
     Settings.FlingTarget = v
+    if not v then RestoreCharacter() end
 end)
-CreateToggle("Spectate Target", false, false, function(v)
+
+AddToggle(TabTarget, "Fling Murderer", "Détecte et projette automatiquement le Murderer", false, true, function(v)
+    if v and GetRootPart(LocalPlayer) then PreFlingCFrame = GetRootPart(LocalPlayer).CFrame end
+    Settings.FlingMurderer = v
+    if not v then RestoreCharacter() end
+end)
+
+AddToggle(TabTarget, "Fling Sheriff", "Détecte et projette automatiquement le Shérif", false, false, function(v)
+    if v and GetRootPart(LocalPlayer) then PreFlingCFrame = GetRootPart(LocalPlayer).CFrame end
+    Settings.FlingSheriff = v
+    if not v then RestoreCharacter() end
+end)
+
+AddToggle(TabTarget, "Spectate Target", "Place la caméra sur le joueur sélectionné", false, false, function(v)
     Settings.SpectateTarget = v
-    if not v and GetCharacter(LocalPlayer) then
-        Camera.CameraSubject = GetCharacter(LocalPlayer):FindFirstChildOfClass("Humanoid")
+    if not v and GetHumanoid(LocalPlayer) then
+        Camera.CameraSubject = GetHumanoid(LocalPlayer)
     end
 end)
-CreateToggle("Loop Go To Target", false, false, function(v)
+
+AddToggle(TabTarget, "Loop Go To Target", "Téléportation continue sur la cible", false, false, function(v)
     Settings.LoopGoToTarget = v
 end)
-CreateActionButton("Teleport To Target", function()
-    local targetRoot = GetRootPart(Settings.SelectedTarget)
+
+AddButton(TabTarget, "Teleport To Target", function()
+    local tRoot = GetRootPart(Settings.SelectedTarget)
     local myRoot = GetRootPart(LocalPlayer)
-    if targetRoot and myRoot then
-        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 3)
+    if tRoot and myRoot then
+        myRoot.CFrame = tRoot.CFrame * CFrame.new(0, 0, 3)
     end
 end)
-CreateDivider()
-CreateToggle("Fling Sheriff", false, false, function(v)
-    Settings.FlingSheriff = v
-end)
-CreateDivider()
 
--- 4. VISUELS (ESP) ET EMOTES
-CreateSectionHeader("4. Visuels (ESP) & Emotes")
-CreateToggle("Player Chams", false, false, function(v)
+-- ONGLET 4 : VISUELS & EMOTES
+AddToggle(TabVisuals, "Player Chams (Rôles)", "Shérif en bleu foncé, Murderer en rouge, Innocent en vert", false, false, function(v)
     Settings.PlayerChams = v
 end)
-CreateToggle("Gun Cham", false, false, function(v)
-    Settings.GunCham = v
-end)
-CreateToggle("3DRendering", false, false, function(v)
-    Settings.Rendering3D = not v
-    pcall(function()
-        RunService:Set3dRenderingEnabled(Settings.Rendering3D)
-    end)
-end)
-CreateToggle("Name ESP", false, false, function(v)
+AddToggle(TabVisuals, "Name ESP", "Affiche le pseudo et le rôle au-dessus des joueurs", false, false, function(v)
     Settings.NameESP = v
 end)
-CreateDivider()
-CreateDropdown("Emote", function()
-    return EmoteList
-end, function(selectedEmote)
-    Settings.SelectedEmote = selectedEmote
+AddToggle(TabVisuals, "Gun Cham", "Met en évidence le pistolet tombé au sol", false, false, function(v)
+    Settings.GunCham = v
 end)
-CreateToggle("Auto Emote", false, false, function(v)
+AddToggle(TabVisuals, "Disable 3D Rendering", "Désactive le rendu 3D pour économiser les FPS pendant le farm", false, false, function(v)
+    Settings.Rendering3D = not v
+    pcall(function() RunService:Set3dRenderingEnabled(Settings.Rendering3D) end)
+end)
+AddDropdown(TabVisuals, "Emote", function() return EmoteList end, function(emote)
+    Settings.SelectedEmote = emote
+end)
+AddToggle(TabVisuals, "Auto Emote", "Joue l'emote sélectionnée en boucle", false, false, function(v)
     Settings.AutoEmote = v
 end)
-CreateDivider()
 
--- 5. SERVEUR ET CONFIGURATION
-CreateSectionHeader("5. Serveur & Configuration")
-CreateToggle("Auto Save Settings", false, false, function(v)
+-- ONGLET 5 : SERVEUR & CONFIGURATION
+AddToggle(TabServer, "Auto Save Settings", "Sauvegarde automatiquement votre configuration", false, false, function(v)
     Settings.AutoSaveSettings = v
     if v and writefile then
-        pcall(function()
-            writefile("HarmonyMikuMM2.json", HttpService:JSONEncode(Settings))
-        end)
+        pcall(function() writefile("HarmonyObsidianMM2.json", HttpService:JSONEncode(Settings)) end)
     end
 end)
-CreateToggle("Auto ReExecute", false, false, function(v)
+AddToggle(TabServer, "Auto ReExecute", "Relance le script lors d'un changement de serveur", false, false, function(v)
     Settings.AutoReExecute = v
 end)
-CreateToggle("Auto Rejoin", false, false, function(v)
+AddToggle(TabServer, "Auto Rejoin", "Rejoint automatiquement en cas de déconnexion", false, false, function(v)
     Settings.AutoRejoin = v
 end)
-CreateActionButton("Rejoin Server", function()
+AddButton(TabServer, "Rejoin Server", function()
     TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
 end)
-CreateActionButton("Server Hop", function()
+AddButton(TabServer, "Server Hop", function()
     TeleportService:Teleport(game.PlaceId, LocalPlayer)
 end)
-CreateDivider()
-CreateDropdown("Select Command", function()
-    return CommandList
-end, function(cmd)
-    Settings.SelectedCommand = cmd
+AddDropdown(TabServer, "Select Command", function() return CommandList end, function(cmd)
     if cmd == "Reset Character" and GetCharacter(LocalPlayer) then
         GetCharacter(LocalPlayer):BreakJoints()
     elseif cmd == "Toggle UI" then
-        MainFrame.Visible = not MainFrame.Visible
+        MainWindow.Visible = not MainWindow.Visible
+    elseif cmd == "Clear ESP" then
+        Settings.PlayerChams = false
+        Settings.NameESP = false
     end
 end)
 
 -- ============================================================================
--- BOUCLES LOGIQUES (AUTOFARM, COMBAT, ESP, CIBLAGE)
+-- LOGIQUE 1 : NOCLIP & POSITION COUCHÉE SANS ANIMATION DE MARCHE
 -- ============================================================================
+RunService.Stepped:Connect(function()
+    local isFarming = Settings.AutoFarmCoins or Settings.AutoFarmEvents
+    local isFlinging = Settings.FlingTarget or Settings.FlingSheriff or Settings.FlingMurderer
 
--- Recherche de la pièce, du bonbon ou du flocon le plus proche
-local function FindNearestCollectible()
+    if isFarming or isFlinging then
+        local myChar = GetCharacter(LocalPlayer)
+        local hum = GetHumanoid(LocalPlayer)
+        if myChar then
+            for _, part in ipairs(myChar:GetDescendants()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end
+        if isFarming and hum then
+            -- Coupe toute animation de marche et maintient le corps rigide
+            hum.PlatformStand = true
+            for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
+                track:Stop()
+            end
+        end
+    end
+end)
+
+-- ============================================================================
+-- LOGIQUE 2 : AUTOFARM SOUS LA MAP (PIÈCES, BONBONS, FLOCONS)
+-- ============================================================================
+local function GetCoinPart(obj)
+    if obj:IsA("BasePart") then return obj end
+    if obj:IsA("Model") then
+        return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+    end
+    return nil
+end
+
+local function IsCollectibleAvailable(coinObj)
+    if not coinObj or not coinObj.Parent then return false end
+    if CollectedCoins[coinObj] then return false end
+    local part = GetCoinPart(coinObj)
+    if not part then return false end
+
+    -- Ignore les pièces déjà ramassées (devenues transparentes)
+    local coinVisual = coinObj:FindFirstChild("CoinVisual")
+    if coinVisual and coinVisual:IsA("BasePart") and coinVisual.Transparency >= 0.95 then
+        return false
+    end
+    if part.Transparency >= 0.95 and not coinVisual then
+        return false
+    end
+    return true
+end
+
+local function FindNextCollectible()
     local myRoot = GetRootPart(LocalPlayer)
     if not myRoot then return nil end
 
-    local nearestObj = nil
-    local shortestDist = math.huge
+    local bestPart = nil
+    local bestObj = nil
+    local minDist = math.huge
 
+    -- 1. Recherche prioritaire dans tous les CoinContainer de la carte active
     for _, desc in ipairs(Workspace:GetDescendants()) do
-        if desc:IsA("BasePart") then
-            local name = string.lower(desc.Name)
-            local isCoin = (name == "coin_server" or name == "coin")
-            local isEventCurrency = (
-                string.find(name, "candy") or
-                string.find(name, "snow") or
-                string.find(name, "token") or
-                (desc.Parent and desc.Parent.Name == "CoinContainer")
-            )
-
-            if (Settings.AutoFarmCoins and isCoin) or (Settings.AutoFarmEvents and (isEventCurrency or isCoin)) then
-                local dist = (desc.Position - myRoot.Position).Magnitude
-                if dist < shortestDist and dist < 250 then
-                    shortestDist = dist
-                    nearestObj = desc
+        if desc.Name == "CoinContainer" then
+            for _, child in ipairs(desc:GetChildren()) do
+                if IsCollectibleAvailable(child) then
+                    local part = GetCoinPart(child)
+                    if part then
+                        local d = (part.Position - myRoot.Position).Magnitude
+                        if d < minDist and d < 350 then
+                            minDist = d
+                            bestPart = part
+                            bestObj = child
+                        end
+                    end
+                end
+            end
+        elseif (Settings.AutoFarmEvents or Settings.AutoFarmCoins) and desc:IsA("BasePart") then
+            local lname = string.lower(desc.Name)
+            if (lname == "coin_server" or string.find(lname, "candy") or string.find(lname, "snow")) and IsCollectibleAvailable(desc) then
+                local d = (desc.Position - myRoot.Position).Magnitude
+                if d < minDist and d < 350 then
+                    minDist = d
+                    bestPart = desc
+                    bestObj = desc
                 end
             end
         end
     end
-    return nearestObj, shortestDist
+
+    return bestPart, bestObj, minDist
 end
 
--- Boucle Autofarm fluide (TweenService pour éviter les téléportations brusques)
+-- Orientation couchée sur le dos/ventre à l'horizontale sous la map
+local ProneRotation = CFrame.Angles(math.rad(90), 0, 0)
+
 task.spawn(function()
-    while task.wait(0.25) do
+    while task.wait(0.1) do
         if Settings.AutoFarmCoins or Settings.AutoFarmEvents then
-            local targetCoin, dist = FindNearestCollectible()
             local myRoot = GetRootPart(LocalPlayer)
-            if targetCoin and myRoot then
-                local duration = math.clamp(dist / 24, 0.15, 2.5)
-                local tween = TweenService:Create(
+            local targetPart, targetObj, dist = FindNextCollectible()
+
+            if myRoot and targetPart and targetObj then
+                -- Place d'abord le joueur sous le niveau de la pièce en position couchée
+                local underPos = Vector3.new(targetPart.Position.X, targetPart.Position.Y + Settings.UnderMapOffset, targetPart.Position.Z)
+                local currentUnder = Vector3.new(myRoot.Position.X, underPos.Y, myRoot.Position.Z)
+                myRoot.CFrame = CFrame.new(currentUnder) * ProneRotation
+                myRoot.AssemblyLinearVelocity = Vector3.zero
+
+                local duration = math.clamp(dist / Settings.FarmSpeed, 0.12, 2.2)
+                local moveTween = TweenService:Create(
                     myRoot,
                     TweenInfo.new(duration, Enum.EasingStyle.Linear),
-                    {CFrame = CFrame.new(targetCoin.Position + Vector3.new(0, 2, 0))}
+                    {CFrame = CFrame.new(underPos) * ProneRotation}
                 )
-                tween:Play()
-                tween.Completed:Wait()
+                moveTween:Play()
+
+                local elapsed = 0
+                while elapsed < duration and (Settings.AutoFarmCoins or Settings.AutoFarmEvents) do
+                    if not targetObj.Parent then break end
+                    myRoot.AssemblyLinearVelocity = Vector3.zero
+                    elapsed = elapsed + task.wait()
+                end
+                moveTween:Cancel()
+
+                -- Remonte brièvement toucher la hitbox de la pièce en restant couché, puis redescend sous la map
+                if (Settings.AutoFarmCoins or Settings.AutoFarmEvents) and targetPart and targetPart.Parent then
+                    local touchPos = Vector3.new(targetPart.Position.X, targetPart.Position.Y - 0.5, targetPart.Position.Z)
+                    myRoot.CFrame = CFrame.new(touchPos) * ProneRotation
+
+                    if firetouchinterest then
+                        pcall(function()
+                            firetouchinterest(myRoot, targetPart, 0)
+                            firetouchinterest(myRoot, targetPart, 1)
+                        end)
+                    end
+                    task.wait(0.12)
+
+                    -- Marque la pièce comme collectée pour passer immédiatement à la suivante
+                    CollectedCoins[targetObj] = true
+
+                    -- Redescend en sécurité sous la carte
+                    local safePos = Vector3.new(touchPos.X, touchPos.Y + Settings.SafeWaitDepth, touchPos.Z)
+                    myRoot.CFrame = CFrame.new(safePos) * ProneRotation
+                end
+            elseif myRoot then
+                -- S'il n'y a aucune pièce proche, reste allongé en sécurité sous la map
+                myRoot.AssemblyLinearVelocity = Vector3.zero
+                myRoot.CFrame = CFrame.new(myRoot.Position.X, myRoot.Position.Y, myRoot.Position.Z) * ProneRotation
             end
         end
     end
 end)
 
--- Boucle Auto Emote
-task.spawn(function()
-    while task.wait(2.5) do
-        if Settings.AutoEmote then
-            pcall(function()
-                local playEmote = ReplicatedStorage:FindFirstChild("PlayEmote", true)
-                if playEmote and playEmote:IsA("RemoteFunction") then
-                    playEmote:InvokeServer(Settings.SelectedEmote)
-                elseif playEmote and playEmote:IsA("RemoteEvent") then
-                    playEmote:FireServer(Settings.SelectedEmote)
-                end
-            end)
-        end
-    end
-end)
-
--- Boucle principale (ESP, Combat, Ciblage)
-RunService.RenderStepped:Connect(function()
-    local myChar = GetCharacter(LocalPlayer)
-    local myRoot = GetRootPart(LocalPlayer)
-
-    -- 1. Spectate Target
-    if Settings.SpectateTarget and Settings.SelectedTarget then
-        local targetChar = GetCharacter(Settings.SelectedTarget)
-        if targetChar and targetChar:FindFirstChildOfClass("Humanoid") then
-            Camera.CameraSubject = targetChar:FindFirstChildOfClass("Humanoid")
-        end
-    end
-
-    -- 2. Loop Go To Target
-    if Settings.LoopGoToTarget and Settings.SelectedTarget and myRoot then
-        local targetRoot = GetRootPart(Settings.SelectedTarget)
-        if targetRoot then
-            myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 3)
-        end
-    end
-
-    -- 3. Fling Target / Fling Sheriff
+-- ============================================================================
+-- LOGIQUE 3 : SYSTÈME DE FLING PHYSIQUE (TARGET, SHERIFF, MURDERER)
+-- ============================================================================
+RunService.Heartbeat:Connect(function()
     local flingSubject = nil
     if Settings.FlingTarget and Settings.SelectedTarget then
         flingSubject = Settings.SelectedTarget
+    elseif Settings.FlingMurderer then
+        flingSubject = FindMurderer()
     elseif Settings.FlingSheriff then
         flingSubject = FindSheriff()
     end
 
-    if flingSubject and myRoot then
+    if flingSubject then
+        local myRoot = GetRootPart(LocalPlayer)
         local targetRoot = GetRootPart(flingSubject)
-        if targetRoot then
-            myRoot.CFrame = targetRoot.CFrame
-            myRoot.Velocity = Vector3.new(9000, 9000, 9000)
-            myRoot.RotVelocity = Vector3.new(9000, 9000, 9000)
+        local hum = GetHumanoid(LocalPlayer)
+        if myRoot and targetRoot then
+            if hum then hum.PlatformStand = true end
+            -- Prédiction du mouvement de la cible + oscillation rapide à travers son HumanoidRootPart
+            local offset = Vector3.new(math.random(-1, 1) * 0.5, 0, math.random(-1, 1) * 0.5)
+            local predictedPos = targetRoot.Position + (targetRoot.AssemblyLinearVelocity * 0.08) + offset
+            myRoot.CFrame = CFrame.new(predictedPos)
+            myRoot.AssemblyLinearVelocity = Vector3.new(9e5, 9e5, 9e5)
+            myRoot.AssemblyAngularVelocity = Vector3.new(9e5, 9e5, 9e5)
         end
     end
+end)
 
-    -- 4. Combat Murderer (Knife Aura & Auto Kill All)
+-- ============================================================================
+-- LOGIQUE 4 : COMBAT, ESP (SHÉRIF BLEU FONCÉ) ET BOUCLE VISUELLE
+-- ============================================================================
+RunService.RenderStepped:Connect(function()
+    local myChar = GetCharacter(LocalPlayer)
+    local myRoot = GetRootPart(LocalPlayer)
+
+    -- Spectate
+    if Settings.SpectateTarget and Settings.SelectedTarget then
+        local tHum = GetHumanoid(Settings.SelectedTarget)
+        if tHum then Camera.CameraSubject = tHum end
+    end
+
+    -- Loop Go To Target
+    if Settings.LoopGoToTarget and Settings.SelectedTarget and myRoot then
+        local tRoot = GetRootPart(Settings.SelectedTarget)
+        if tRoot then myRoot.CFrame = tRoot.CFrame * CFrame.new(0, 0, 3) end
+    end
+
+    -- Knife Aura / Auto Kill All
     if GetPlayerRole(LocalPlayer) == "Murderer" and myRoot then
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer then
                 local pRoot = GetRootPart(p)
                 if pRoot then
                     local dist = (pRoot.Position - myRoot.Position).Magnitude
-                    if Settings.AutoKillAll then
-                        pRoot.CFrame = myRoot.CFrame * CFrame.new(0, 0, -2)
-                    elseif dist <= Settings.AuraDistance then
-                        pRoot.CFrame = myRoot.CFrame * CFrame.new(0, 0, -1.5)
+                    if Settings.AutoKillAll or dist <= Settings.AuraDistance then
+                        pRoot.CFrame = myRoot.CFrame * CFrame.new(0, 0, -1.8)
                     end
                 end
             end
         end
     end
 
-    -- 5. Combat Shérif (Silent Aim, Kill Murderer Blatant, Auto Shoot)
+    -- Combat Shérif
     local murderer = FindMurderer()
     if murderer and myRoot then
         local murdRoot = GetRootPart(murderer)
         if murdRoot then
             if Settings.KillMurdererBlatant then
-                myRoot.CFrame = murdRoot.CFrame * CFrame.new(0, 0, 6)
-                ShootAtMurderer()
+                myRoot.CFrame = murdRoot.CFrame * CFrame.new(0, 0, 5)
+                ShootMurdererNow()
             elseif Settings.AutoShootMurderer then
-                local rayParams = RaycastParams.new()
-                rayParams.FilterDescendantsInstances = {myChar}
-                rayParams.FilterType = Enum.RaycastFilterType.Exclude
-                local ray = Workspace:Raycast(myRoot.Position, (murdRoot.Position - myRoot.Position), rayParams)
+                local params = RaycastParams.new()
+                params.FilterDescendantsInstances = {myChar}
+                params.FilterType = Enum.RaycastFilterType.Exclude
+                local ray = Workspace:Raycast(myRoot.Position, murdRoot.Position - myRoot.Position, params)
                 if ray and ray.Instance and ray.Instance:IsDescendantOf(murderer.Character) then
-                    ShootAtMurderer()
+                    ShootMurdererNow()
                 end
             elseif Settings.SilentAim and GetPlayerRole(LocalPlayer) == "Sheriff" then
                 Camera.CFrame = CFrame.new(Camera.CFrame.Position, murdRoot.Position)
@@ -1026,80 +1252,94 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- 6. Player Chams & Name ESP
+    -- ESP Joueurs (Shérif en Bleu Foncé #1D4ED8)
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer and p.Character then
             local char = p.Character
             local role = GetPlayerRole(p)
-            local roleColor = Color3.fromHex("#10B981") -- Innocent (Vert)
+            local roleColor = Theme.InnocentESP
             if role == "Murderer" then
-                roleColor = Color3.fromHex("#EF4444")   -- Murderer (Rouge)
+                roleColor = Theme.MurdererESP
             elseif role == "Sheriff" then
-                roleColor = Theme.Cyan                  -- Shérif (Bleu Miku)
+                roleColor = Theme.SheriffESP -- Bleu foncé
             end
 
-            -- Highlight (Player Chams)
-            local highlight = char:FindFirstChild("HarmonyCham")
+            local hl = char:FindFirstChild("HarmonyCham")
             if Settings.PlayerChams then
-                if not highlight then
-                    highlight = Instance.new("Highlight")
-                    highlight.Name = "HarmonyCham"
-                    highlight.FillTransparency = 0.45
-                    highlight.OutlineTransparency = 0.1
-                    highlight.Parent = char
+                if not hl then
+                    hl = Instance.new("Highlight")
+                    hl.Name = "HarmonyCham"
+                    hl.FillTransparency = 0.4
+                    hl.OutlineTransparency = 0.05
+                    hl.Parent = char
                 end
-                highlight.FillColor = roleColor
-                highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
-            elseif highlight then
-                highlight:Destroy()
+                hl.FillColor = roleColor
+                hl.OutlineColor = roleColor
+            elseif hl then
+                hl:Destroy()
             end
 
-            -- BillboardGui (Name ESP)
             local head = char:FindFirstChild("Head")
             if head then
-                local espGui = head:FindFirstChild("HarmonyNameESP")
+                local bGui = head:FindFirstChild("HarmonyNameESP")
                 if Settings.NameESP then
-                    if not espGui then
-                        espGui = Instance.new("BillboardGui")
-                        espGui.Name = "HarmonyNameESP"
-                        espGui.Size = UDim2.new(0, 140, 0, 30)
-                        espGui.StudsOffset = Vector3.new(0, 2.5, 0)
-                        espGui.AlwaysOnTop = true
-                        espGui.Parent = head
+                    if not bGui then
+                        bGui = Instance.new("BillboardGui")
+                        bGui.Name = "HarmonyNameESP"
+                        bGui.Size = UDim2.new(0, 150, 0, 28)
+                        bGui.StudsOffset = Vector3.new(0, 2.6, 0)
+                        bGui.AlwaysOnTop = true
+                        bGui.Parent = head
 
-                        local nameTag = Instance.new("TextLabel")
-                        nameTag.Name = "Tag"
-                        nameTag.Size = UDim2.new(1, 0, 1, 0)
-                        nameTag.BackgroundTransparency = 1
-                        nameTag.Font = Enum.Font.GothamBold
-                        nameTag.TextSize = 13
-                        nameTag.TextStrokeTransparency = 0.3
-                        nameTag.Parent = espGui
+                        local tag = Instance.new("TextLabel")
+                        tag.Name = "Tag"
+                        tag.Size = UDim2.new(1, 0, 1, 0)
+                        tag.BackgroundTransparency = 1
+                        tag.Font = Enum.Font.GothamBold
+                        tag.TextSize = 12
+                        tag.TextStrokeTransparency = 0.25
+                        tag.Parent = bGui
                     end
-                    espGui.Tag.Text = string.format("%s [%s]", p.Name, role)
-                    espGui.Tag.TextColor3 = roleColor
-                elseif espGui then
-                    espGui:Destroy()
+                    bGui.Tag.Text = string.format("%s [%s]", p.Name, role)
+                    bGui.Tag.TextColor3 = roleColor
+                elseif bGui then
+                    bGui:Destroy()
                 end
             end
         end
     end
 
-    -- 7. Gun Cham (Surbrillance du pistolet au sol)
+    -- Gun Drop ESP
     local gunDrop = Workspace:FindFirstChild("GunDrop", true)
     if gunDrop and gunDrop:IsA("BasePart") then
-        local gunHighlight = gunDrop:FindFirstChild("HarmonyGunCham")
+        local gCham = gunDrop:FindFirstChild("HarmonyGunCham")
         if Settings.GunCham then
-            if not gunHighlight then
-                gunHighlight = Instance.new("Highlight")
-                gunHighlight.Name = "HarmonyGunCham"
-                gunHighlight.FillColor = Theme.Magenta
-                gunHighlight.OutlineColor = Theme.Cyan
-                gunHighlight.FillTransparency = 0.25
-                gunHighlight.Parent = gunDrop
+            if not gCham then
+                gCham = Instance.new("Highlight")
+                gCham.Name = "HarmonyGunCham"
+                gCham.FillColor = Theme.Accent
+                gCham.OutlineColor = Theme.TextPrimary
+                gCham.FillTransparency = 0.25
+                gCham.Parent = gunDrop
             end
-        elseif gunHighlight then
-            gunHighlight:Destroy()
+        elseif gCham then
+            gCham:Destroy()
+        end
+    end
+end)
+
+-- Auto Emote
+task.spawn(function()
+    while task.wait(2.5) do
+        if Settings.AutoEmote then
+            pcall(function()
+                local remote = ReplicatedStorage:FindFirstChild("PlayEmote", true)
+                if remote and remote:IsA("RemoteFunction") then
+                    remote:InvokeServer(Settings.SelectedEmote)
+                elseif remote and remote:IsA("RemoteEvent") then
+                    remote:FireServer(Settings.SelectedEmote)
+                end
+            end)
         end
     end
 end)
