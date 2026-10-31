@@ -1,6 +1,6 @@
 -- ============================================================================
--- HARMONY HUB (AUTOFARM ONLY EDITION) - MADE BY HARMONY
--- Version ultra-allégée : Uniquement l'Autofarm (Pure CFrame)
+-- HARMONY HUB (XENO / VERTEX EDITION) - MADE BY HARMONY
+-- 25+ Speed Autofarm Edition (All other modules removed)
 -- ============================================================================
 
 local Players = game:GetService("Players")
@@ -12,14 +12,13 @@ local CoreGui = game:GetService("CoreGui")
 local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
 
 pcall(function()
     Workspace.FallenPartsDestroyHeight = 0 / 0
 end)
 
 -- ============================================================================
--- COLOR PALETTE & SETTINGS
+-- THEME & SETTINGS
 -- ============================================================================
 local Theme = {
     BgMain       = Color3.fromHex("#0D0F17"),
@@ -39,15 +38,15 @@ local Settings = {
     AvoidMurdererFarm = true,
     AutoResetAfterFarm = false,
     FarmSpeed = 25,
-    UnderMapDepth = -3.5
+    UnderMapDepth = -4
 }
 
 local CachedRoles = {}
 local CachedDeadPlayers = {}
 local CachedCoinContainer = nil
 local CachedBagIsFull = false
+local RoundIsActive = false
 local CollectedCoins = {}
-local SavedMapReturnCFrame = nil
 
 -- ============================================================================
 -- UTILITIES
@@ -81,13 +80,21 @@ local function IsPlayerInActiveMap(player)
     return (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(refPos.X, 0, refPos.Z)).Magnitude < 250
 end
 
+local function GetPlayerRole(player)
+    if not player then return "Innocent" end
+    if HasItem(player, "Knife") then return "Murderer" end
+    if HasItem(player, "Gun") or HasItem(player, "Revolver") then return "Sheriff" end
+    if RoundIsActive and not CachedDeadPlayers[player.Name] then
+        local cached = CachedRoles[player.Name]
+        if cached == "Murderer" then return "Murderer"
+        elseif cached == "Sheriff" or cached == "Hero" then return "Sheriff" end
+    end
+    return "Innocent"
+end
+
 local function FindMurderer()
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
-            if HasItem(p, "Knife") or CachedRoles[p.Name] == "Murderer" then
-                return p
-            end
-        end
+        if p ~= LocalPlayer and GetPlayerRole(p) == "Murderer" then return p end
     end
     return nil
 end
@@ -117,7 +124,7 @@ local function ForceStandUpright()
 end
 
 -- ============================================================================
--- BACKGROUND CACHE SCANNER
+-- BACKGROUND SCANNER (BAG & ROLES FOR AVOID MURDERER)
 -- ============================================================================
 local function CheckIfBagFullUI()
     local pGui = LocalPlayer:FindFirstChild("PlayerGui")
@@ -141,7 +148,6 @@ task.spawn(function()
         local foundContainer = Workspace:FindFirstChild("CoinContainer", true)
         if foundContainer ~= CachedCoinContainer then
             table.clear(CollectedCoins)
-            SavedMapReturnCFrame = nil
         end
         CachedCoinContainer = foundContainer
 
@@ -164,13 +170,21 @@ task.spawn(function()
             end
         end)
         
+        local activeCount = 0
         for _, p in ipairs(Players:GetPlayers()) do
-            if HasItem(p, "Knife") then newRoles[p.Name] = "Murderer" newDead[p.Name] = nil
-            elseif HasItem(p, "Gun") or HasItem(p, "Revolver") then newRoles[p.Name] = "Sheriff" newDead[p.Name] = nil end
+            if HasItem(p, "Knife") then newRoles[p.Name] = "Murderer" newDead[p.Name] = nil activeCount = activeCount + 1
+            elseif HasItem(p, "Gun") or HasItem(p, "Revolver") then newRoles[p.Name] = "Sheriff" newDead[p.Name] = nil activeCount = activeCount + 1 end
         end
 
-        CachedRoles = newRoles
-        CachedDeadPlayers = newDead
+        if activeCount > 0 or (foundContainer ~= nil) then
+            RoundIsActive = true
+            CachedRoles = newRoles
+            CachedDeadPlayers = newDead
+        else
+            RoundIsActive = false
+            table.clear(CachedRoles)
+            table.clear(CachedDeadPlayers)
+        end
 
         CachedBagIsFull = IsPlayerInActiveMap(LocalPlayer) and CheckIfBagFullUI()
         if CachedBagIsFull and Settings.AutoResetAfterFarm then
@@ -182,7 +196,7 @@ task.spawn(function()
 end)
 
 -- ============================================================================
--- GUI BUILDER
+-- GUI BUILDER (OBSIDIAN THEME)
 -- ============================================================================
 local OldGui = CoreGui:FindFirstChild("HarmonyObsidianMM2") or (LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("HarmonyObsidianMM2"))
 if OldGui then OldGui:Destroy() end
@@ -211,8 +225,8 @@ FloatingIcon.UIStroke.Thickness = 2
 
 local MainWindow = Instance.new("Frame", ScreenGui)
 MainWindow.Name = "MainWindow"
-MainWindow.Size = UDim2.new(0, 500, 0, 320)
-MainWindow.Position = UDim2.new(0.5, -250, 0.5, -160)
+MainWindow.Size = UDim2.new(0, 620, 0, 340)
+MainWindow.Position = UDim2.new(0.5, -310, 0.5, -170)
 MainWindow.BackgroundColor3 = Theme.BgMain
 MainWindow.BorderSizePixel = 0
 MainWindow.ClipsDescendants = true
@@ -222,41 +236,59 @@ WinStroke.Color = Theme.Stroke
 WinStroke.Thickness = 1.5
 
 local Sidebar = Instance.new("Frame", MainWindow)
-Sidebar.Size = UDim2.new(0, 160, 1, 0)
+Sidebar.Size = UDim2.new(0, 180, 1, 0)
 Sidebar.BackgroundColor3 = Theme.BgSidebar
 Sidebar.BorderSizePixel = 0
 Instance.new("UICorner", Sidebar).CornerRadius = UDim.new(0, 12)
+local SideBorder = Instance.new("Frame", Sidebar)
+SideBorder.Size = UDim2.new(0, 1, 1, 0)
+SideBorder.Position = UDim2.new(1, -1, 0, 0)
+SideBorder.BackgroundColor3 = Theme.Stroke
+SideBorder.BorderSizePixel = 0
 
 local BrandTitle = Instance.new("TextLabel", Sidebar)
-BrandTitle.Size = UDim2.new(1, -20, 0, 24)
-BrandTitle.Position = UDim2.new(0, 12, 0, 16)
+BrandTitle.Size = UDim2.new(1, -28, 0, 24)
+BrandTitle.Position = UDim2.new(0, 16, 0, 16)
 BrandTitle.BackgroundTransparency = 1
 BrandTitle.Text = "HARMONY HUB"
 BrandTitle.Font = Enum.Font.GothamBlack
-BrandTitle.TextSize = 15
+BrandTitle.TextSize = 16
 BrandTitle.TextColor3 = Theme.TextPrimary
 BrandTitle.TextXAlignment = Enum.TextXAlignment.Left
 
 local SubTitle = Instance.new("TextLabel", Sidebar)
-SubTitle.Size = UDim2.new(1, -20, 0, 16)
-SubTitle.Position = UDim2.new(0, 12, 0, 36)
+SubTitle.Size = UDim2.new(1, -28, 0, 16)
+SubTitle.Position = UDim2.new(0, 16, 0, 38)
 SubTitle.BackgroundTransparency = 1
-SubTitle.Text = "Autofarm Only"
+SubTitle.Text = "Murder Mystery 2"
 SubTitle.Font = Enum.Font.GothamMedium
-SubTitle.TextSize = 11
+SubTitle.TextSize = 12
 SubTitle.TextColor3 = Theme.AccentBright
 SubTitle.TextXAlignment = Enum.TextXAlignment.Left
 
 local TabButtonsHolder = Instance.new("Frame", Sidebar)
-TabButtonsHolder.Size = UDim2.new(1, -20, 1, -120)
-TabButtonsHolder.Position = UDim2.new(0, 10, 0, 68)
+TabButtonsHolder.Size = UDim2.new(1, -24, 1, -120)
+TabButtonsHolder.Position = UDim2.new(0, 12, 0, 68)
 TabButtonsHolder.BackgroundTransparency = 1
 local TabListLayout = Instance.new("UIListLayout", TabButtonsHolder)
 TabListLayout.Padding = UDim.new(0, 6)
 
+local FooterCard = Instance.new("Frame", Sidebar)
+FooterCard.Size = UDim2.new(1, -24, 0, 36)
+FooterCard.Position = UDim2.new(0, 12, 1, -48)
+FooterCard.BackgroundColor3 = Theme.BgCard
+Instance.new("UICorner", FooterCard).CornerRadius = UDim.new(0, 8)
+local FooterLabel = Instance.new("TextLabel", FooterCard)
+FooterLabel.Size = UDim2.new(1, 0, 1, 0)
+FooterLabel.BackgroundTransparency = 1
+FooterLabel.Text = "✦ Made by Harmony"
+FooterLabel.Font = Enum.Font.GothamBold
+FooterLabel.TextSize = 12
+FooterLabel.TextColor3 = Theme.AccentBright
+
 local TopBar = Instance.new("Frame", MainWindow)
-TopBar.Size = UDim2.new(1, -160, 0, 48)
-TopBar.Position = UDim2.new(0, 160, 0, 0)
+TopBar.Size = UDim2.new(1, -180, 0, 48)
+TopBar.Position = UDim2.new(0, 180, 0, 0)
 TopBar.BackgroundTransparency = 1
 local ActiveTabTitle = Instance.new("TextLabel", TopBar)
 ActiveTabTitle.Size = UDim2.new(0, 120, 1, 0)
@@ -279,8 +311,8 @@ MinimizeBtn.TextColor3 = Theme.TextMuted
 Instance.new("UICorner", MinimizeBtn).CornerRadius = UDim.new(0, 6)
 
 local PagesContainer = Instance.new("Frame", MainWindow)
-PagesContainer.Size = UDim2.new(1, -160, 1, -48)
-PagesContainer.Position = UDim2.new(0, 160, 0, 48)
+PagesContainer.Size = UDim2.new(1, -180, 1, -48)
+PagesContainer.Position = UDim2.new(0, 180, 0, 48)
 PagesContainer.BackgroundTransparency = 1
 
 local dragging, dragInput, dragStart, startPos
@@ -330,7 +362,7 @@ local function CreateTab(tabName, iconText)
     local TabBtn = Instance.new("TextButton", TabButtonsHolder)
     TabBtn.Size = UDim2.new(1, 0, 0, 36)
     TabBtn.BackgroundColor3 = Theme.BgCard
-    TabBtn.BackgroundTransparency = 1
+    TabBtn.BackgroundTransparency = 0
     TabBtn.Text = ""
     Instance.new("UICorner", TabBtn).CornerRadius = UDim.new(0, 8)
     local Indicator = Instance.new("Frame", TabBtn)
@@ -338,16 +370,16 @@ local function CreateTab(tabName, iconText)
     Indicator.Position = UDim2.new(0, 0, 0.5, -9)
     Indicator.BackgroundColor3 = Theme.Accent
     Indicator.BorderSizePixel = 0
-    Indicator.Visible = false
+    Indicator.Visible = true
     Instance.new("UICorner", Indicator).CornerRadius = UDim.new(1, 0)
     local Label = Instance.new("TextLabel", TabBtn)
     Label.Size = UDim2.new(1, -24, 1, 0)
     Label.Position = UDim2.new(0, 14, 0, 0)
     Label.BackgroundTransparency = 1
     Label.Text = iconText .. "   " .. tabName
-    Label.Font = Enum.Font.GothamMedium
+    Label.Font = Enum.Font.GothamBold
     Label.TextSize = 13
-    Label.TextColor3 = Theme.TextMuted
+    Label.TextColor3 = Theme.TextPrimary
     Label.TextXAlignment = Enum.TextXAlignment.Left
     
     local Page = Instance.new("ScrollingFrame", PagesContainer)
@@ -356,7 +388,7 @@ local function CreateTab(tabName, iconText)
     Page.BorderSizePixel = 0
     Page.ScrollBarThickness = 3
     Page.ScrollBarImageColor3 = Theme.Accent
-    Page.Visible = false
+    Page.Visible = true
     local PageLayout = Instance.new("UIListLayout", Page)
     PageLayout.Padding = UDim.new(0, 8)
     local PagePadding = Instance.new("UIPadding", Page)
@@ -367,22 +399,6 @@ local function CreateTab(tabName, iconText)
     
     local tabData = {Button = TabBtn, Label = Label, Indicator = Indicator, Page = Page, Order = 0}
     table.insert(Tabs, tabData)
-    TabBtn.MouseButton1Click:Connect(function()
-        for _, t in ipairs(Tabs) do
-            t.Page.Visible = false
-            t.Indicator.Visible = false
-            t.Label.TextColor3 = Theme.TextMuted
-            t.Label.Font = Enum.Font.GothamMedium
-            TweenService:Create(t.Button, TweenInfo.new(0.15), {BackgroundTransparency = 1}):Play()
-        end
-        Page.Visible = true
-        Indicator.Visible = true
-        Label.TextColor3 = Theme.TextPrimary
-        Label.Font = Enum.Font.GothamBold
-        ActiveTabTitle.Text = tabName
-        TweenService:Create(TabBtn, TweenInfo.new(0.15), {BackgroundTransparency = 0}):Play()
-    end)
-    if #Tabs == 1 then Page.Visible = true Indicator.Visible = true Label.TextColor3 = Theme.TextPrimary Label.Font = Enum.Font.GothamBold end
     return tabData
 end
 
@@ -487,7 +503,7 @@ local function AddSlider(tab, titleText, minVal, maxVal, defaultVal, callback)
 end
 
 -- ============================================================================
--- MENU BUILD
+-- TABS & OPTIONS (AUTOFARM ONLY)
 -- ============================================================================
 local TabFarm = CreateTab("Autofarm", "⚡")
 
@@ -496,17 +512,27 @@ AddToggle(TabFarm, "Auto Farm Coins (Under Map)", false, function(v)
     table.clear(CollectedCoins)
     if not v and not Settings.AutoFarmEvents then ForceStandUpright() end
 end)
+
 AddToggle(TabFarm, "Auto Farm Candies/Events", false, function(v)
     Settings.AutoFarmEvents = v
     table.clear(CollectedCoins)
     if not v and not Settings.AutoFarmCoins then ForceStandUpright() end
 end)
-AddToggle(TabFarm, "Avoid Murderer While Farming", true, function(v) Settings.AvoidMurdererFarm = v end)
-AddToggle(TabFarm, "Auto Reset When Bag Full", false, function(v) Settings.AutoResetAfterFarm = v end)
-AddSlider(TabFarm, "Farm Speed (Max 28 for Safety)", 14, 28, 25, function(val) Settings.FarmSpeed = val end)
+
+AddToggle(TabFarm, "Avoid Murderer While Farming", true, function(v)
+    Settings.AvoidMurdererFarm = v
+end)
+
+AddToggle(TabFarm, "Auto Reset When Bag Full", false, function(v)
+    Settings.AutoResetAfterFarm = v
+end)
+
+AddSlider(TabFarm, "Farm Speed (Vertex Mode)", 14, 28, 22, function(val)
+    Settings.FarmSpeed = val
+end)
 
 -- ============================================================================
--- AUTOFARM PURE CFRAME LOGIC (VERTEX METHOD)
+-- AUTOFARM PURE CFRAME (VERTEX METHOD)
 -- ============================================================================
 local function GetSafestMapCoin()
     local myRoot = GetRootPart(LocalPlayer)
@@ -536,6 +562,7 @@ local function GetSafestMapCoin()
             end
         end
     end
+    -- Fallback
     if not bestPart and CachedCoinContainer then
         for _, child in ipairs(CachedCoinContainer:GetChildren()) do
             local exp = CollectedCoins[child]
@@ -548,24 +575,27 @@ local function GetSafestMapCoin()
     return bestPart, bestObj
 end
 
-local ProneAngles = CFrame.Angles(math.rad(90), 0, 0)
-
+-- NOCLIP
 RunService.Stepped:Connect(function()
     local myChar = GetCharacter(LocalPlayer)
     if not myChar then return end
-    if (Settings.AutoFarmCoins or Settings.AutoFarmEvents) and IsPlayerInActiveMap(LocalPlayer) and not CachedBagIsFull then
+    local isFarming = (Settings.AutoFarmCoins or Settings.AutoFarmEvents) and IsPlayerInActiveMap(LocalPlayer) and not CachedBagIsFull
+
+    if isFarming then
         for _, part in ipairs(myChar:GetDescendants()) do
             if part:IsA("BasePart") then part.CanCollide = false end
         end
     end
 end)
 
+-- PHYSICS LOOP
 RunService.Heartbeat:Connect(function(dt)
     local myChar = GetCharacter(LocalPlayer)
     local myRoot = GetRootPart(LocalPlayer)
     local hum = GetHumanoid(LocalPlayer)
     if not (myChar and myRoot and hum and hum.Health > 0) then return end
 
+    -- PURE CFRAME AUTOFARM (SPEED 25+)
     if Settings.AutoFarmCoins or Settings.AutoFarmEvents then
         if not IsPlayerInActiveMap(LocalPlayer) or CachedBagIsFull then
             if hum.PlatformStand then ForceStandUpright() end
@@ -586,14 +616,14 @@ RunService.Heartbeat:Connect(function(dt)
         local stepDist = Settings.FarmSpeed * dt
 
         if dist3D <= math.max(stepDist * 1.5, 2.5) then
-            myRoot.CFrame = CFrame.new(goalPos) * ProneAngles
-            local oldTransp = targetPart.Transparency
-            targetPart.Transparency = 1
-            if firetouchinterest then pcall(function() firetouchinterest(myRoot, targetPart, 0) firetouchinterest(myRoot, targetPart, 1) end) end
+            myRoot.CFrame = CFrame.new(goalPos) * CFrame.Angles(math.rad(90), 0, 0)
+            if firetouchinterest then
+                pcall(function() firetouchinterest(myRoot, targetPart, 0) firetouchinterest(myRoot, targetPart, 1) end)
+            end
             CollectedCoins[targetObj] = os.clock() + 3.0
-            task.delay(3, function() if targetPart then targetPart.Transparency = oldTransp end end)
         else
-            myRoot.CFrame = CFrame.new(curPos + (deltaVec.Unit * stepDist)) * ProneAngles
+            myRoot.CFrame = CFrame.new(curPos + (deltaVec.Unit * stepDist)) * CFrame.Angles(math.rad(90), 0, 0)
         end
     end
 end)
+
