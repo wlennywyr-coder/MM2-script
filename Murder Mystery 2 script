@@ -593,8 +593,6 @@ local function PlayNativeMM2Emote(emoteName)
 	Runtime.LastEmoteFireTime = os.clock()
 	Runtime.EmoteNeedsRefresh = false
 
-	-- Appel direct et exclusif au système d'émotes natif de Murder Mystery 2 :
-	-- ReplicatedStorage.Remotes.Misc.PlayEmote:Invoke(emoteName)
 	task.spawn(function()
 		pcall(function()
 			local remotes = ReplicatedStorage:FindFirstChild("Remotes")
@@ -1064,6 +1062,19 @@ local function RestoreFromHarmonyIcon()
 	MainWindow.Visible = true
 end
 
+-- Raccourci clavier Ctrl (LeftControl / RightControl) pour cacher le menu en icône Harmony (comme le bouton "-") ou le réafficher
+AddConnection(UserInputService.InputBegan, function(input)
+	if not UserInputService:GetFocusedTextBox() then
+		if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+			if MainWindow.Visible then
+				MinimizeToHarmonyIcon()
+			else
+				RestoreFromHarmonyIcon()
+			end
+		end
+	end
+end)
+
 -- Gestion propre du clic et du glisser UNIQUEMENT sur le bouton "Harmony"
 do
 	local miniDragging = false
@@ -1435,7 +1446,7 @@ local function ApplyHarmonyTheme(themeName)
 	MainGradient.Color = ColorSequence.new({
 		ColorSequenceKeypoint.new(0, palette.GradStart),
 		ColorSequenceKeypoint.new(0.55, palette.GradMid),
-		ColorSequenceKeypoint.new(1, palette.GradEnd)
+		ColorSequenceKeypoint.new(1, ActivePalette.GradEnd)
 	})
 
 	if palette.AssetId and palette.AssetId ~= "" then
@@ -3399,7 +3410,6 @@ AddConnection(RunService.Heartbeat, function()
 			localHum.UseJumpPower = true
 			localHum.JumpPower = Config.JumpPowerValue
 		end
-		-- Dès que le joueur marche ou saute, on marque que l'émote MM2 devra être relancée à l'arrêt
 		if localHum.MoveDirection.Magnitude > 0.05 or localHum.Jump then
 			Runtime.EmoteNeedsRefresh = true
 		end
@@ -3907,8 +3917,6 @@ task.spawn(function()
 	while ScreenGui.Parent do
 		if Config.AutoEmote and IsAlive(LocalPlayer) and not Runtime.IsCurrentlyFarming and not Runtime.IsFlinging then
 			local hum = GetHumanoid(LocalPlayer)
-			-- Relance la vraie émote MM2 uniquement quand le personnage s'arrête de bouger
-			-- (ou toutes les 2.5s pour les émotes courtes comme dab)
 			if hum and hum.MoveDirection.Magnitude < 0.05 then
 				local isShortEmote = (Config.SelectedEmote == "dab")
 				if Runtime.EmoteNeedsRefresh or (isShortEmote and (os.clock() - Runtime.LastEmoteFireTime) > 2.5) then
