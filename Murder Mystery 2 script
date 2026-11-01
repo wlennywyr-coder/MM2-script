@@ -1695,7 +1695,7 @@ local function CreateToggle(parent, text, defaultValue, _unusedLock, callback)
 	}
 end
 
--- CreateDropdown (Icône de grille 2x2 dessinée en Frames natives sans caractère rectangle)
+-- CreateDropdown
 local function CreateDropdown(parent, labelPrefix, optionsList, defaultOption, callback)
 	local container = Instance.new("Frame")
 	container.LayoutOrder = NextOrder()
@@ -2040,7 +2040,7 @@ local function CreateButton(parent, text, callback)
 	end)
 end
 
--- CreateKeybind (Sans cadenas)
+-- CreateKeybind CORRIGÉ : ignore gameProcessed pour que R, E, F, C, V et toutes les touches marchent à 100%
 local function CreateKeybind(parent, text, defaultKeyName, _unusedLock, onTrigger, onKeyChange)
 	local row = Instance.new("Frame")
 	row.LayoutOrder = NextOrder()
@@ -2095,9 +2095,13 @@ local function CreateKeybind(parent, text, defaultKeyName, _unusedLock, onTrigge
 		keyBtn.Text = "..."
 	end)
 
-	AddConnection(UserInputService.InputBegan, function(input, gameProcessed)
+	AddConnection(UserInputService.InputBegan, function(input)
+		-- Enregistrement d'une nouvelle touche quand on a cliqué sur le bouton
 		if binding then
-			if input.UserInputType == Enum.UserInputType.Keyboard then
+			if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
+				if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+					return
+				end
 				binding = false
 				if input.KeyCode == Enum.KeyCode.Backspace or input.KeyCode == Enum.KeyCode.Escape then
 					currentKey = "None"
@@ -2114,8 +2118,9 @@ local function CreateKeybind(parent, text, defaultKeyName, _unusedLock, onTrigge
 			return
 		end
 
-		if not gameProcessed and input.UserInputType == Enum.UserInputType.Keyboard then
-			if currentKey ~= "None" and input.KeyCode.Name == currentKey then
+		-- Déclenchement de la touche (ignore gameProcessed pour que R, E, F, C, etc. fonctionnent toujours hors chat)
+		if not UserInputService:GetFocusedTextBox() and input.UserInputType == Enum.UserInputType.Keyboard then
+			if currentKey ~= "None" and string.upper(input.KeyCode.Name) == string.upper(tostring(currentKey)) then
 				if onTrigger then
 					task.spawn(onTrigger)
 				end
