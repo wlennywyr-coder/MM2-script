@@ -1,6 +1,6 @@
 -- ============================================================================
--- HARMONY HUB (XENO / VERTEX EDITION) - MADE BY HARMONY
--- 25+ Speed Autofarm Edition (All other modules removed)
+-- HARMONY HUB V9 (ENGLISH EDITION - AUTOFARM ONLY) - MADE BY HARMONY
+-- Exact V9 Universal Engine: 25+ Speed Farm (All other tabs removed)
 -- ============================================================================
 
 local Players = game:GetService("Players")
@@ -18,7 +18,7 @@ pcall(function()
 end)
 
 -- ============================================================================
--- THEME & SETTINGS
+-- COLOR PALETTE
 -- ============================================================================
 local Theme = {
     BgMain       = Color3.fromHex("#0D0F17"),
@@ -28,17 +28,22 @@ local Theme = {
     Stroke       = Color3.fromHex("#262D42"),
     Accent       = Color3.fromHex("#6366F1"),
     AccentBright = Color3.fromHex("#818CF8"),
+    Danger       = Color3.fromHex("#F43F5E"),
     TextPrimary  = Color3.fromHex("#F8FAFC"),
     TextMuted    = Color3.fromHex("#94A3B8")
 }
 
+-- ============================================================================
+-- STATE & CONFIGURATION
+-- ============================================================================
 local Settings = {
+    -- Autofarm (Pure CFrame Math for high speeds like Vertex)
     AutoFarmCoins = false,
     AutoFarmEvents = false,
     AvoidMurdererFarm = true,
     AutoResetAfterFarm = false,
-    FarmSpeed = 25,
-    UnderMapDepth = -4
+    FarmSpeed = 22,
+    UnderMapDepth = -3.5
 }
 
 local CachedRoles = {}
@@ -47,6 +52,7 @@ local CachedCoinContainer = nil
 local CachedBagIsFull = false
 local RoundIsActive = false
 local CollectedCoins = {}
+local SavedMapReturnCFrame = nil
 
 -- ============================================================================
 -- UTILITIES
@@ -76,8 +82,10 @@ local function IsPlayerInActiveMap(player)
         local anyPart = CachedCoinContainer.Parent:FindFirstChildWhichIsA("BasePart", true)
         if anyPart then refPos = anyPart.Position end
     end
+
     if not refPos then return false end
-    return (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(refPos.X, 0, refPos.Z)).Magnitude < 250
+    local flatDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(refPos.X, 0, refPos.Z)).Magnitude
+    return flatDist < 250
 end
 
 local function GetPlayerRole(player)
@@ -124,7 +132,7 @@ local function ForceStandUpright()
 end
 
 -- ============================================================================
--- BACKGROUND SCANNER (BAG & ROLES FOR AVOID MURDERER)
+-- FAST CACHE SCANNER
 -- ============================================================================
 local function CheckIfBagFullUI()
     local pGui = LocalPlayer:FindFirstChild("PlayerGui")
@@ -132,7 +140,9 @@ local function CheckIfBagFullUI()
     for _, desc in ipairs(pGui:GetDescendants()) do
         if desc:IsA("TextLabel") and desc.Visible then
             local txt = string.lower(desc.Text)
-            if txt == "full" or txt == "full!" or string.find(txt, "bag full") then return true end
+            if txt == "full" or txt == "full!" or string.find(txt, "bag full") then
+                if desc.Parent and desc.Parent:IsA("GuiObject") and desc.Parent.Visible then return true end
+            end
             local cur, max = string.match(txt, "^(%d+)%s*/%s*(%d+)$")
             if cur and max then
                 local nCur, nMax = tonumber(cur), tonumber(max)
@@ -148,6 +158,7 @@ task.spawn(function()
         local foundContainer = Workspace:FindFirstChild("CoinContainer", true)
         if foundContainer ~= CachedCoinContainer then
             table.clear(CollectedCoins)
+            SavedMapReturnCFrame = nil
         end
         CachedCoinContainer = foundContainer
 
@@ -196,7 +207,7 @@ task.spawn(function()
 end)
 
 -- ============================================================================
--- GUI BUILDER (OBSIDIAN THEME)
+-- UI BUILDER
 -- ============================================================================
 local OldGui = CoreGui:FindFirstChild("HarmonyObsidianMM2") or (LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("HarmonyObsidianMM2"))
 if OldGui then OldGui:Destroy() end
@@ -208,7 +219,7 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 local ok = pcall(function() ScreenGui.Parent = CoreGui end)
 if not ok then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
 
-local FloatingIcon = Instance.new("TextButton", ScreenGui)
+local FloatingIcon = Instance.new("TextButton")
 FloatingIcon.Name = "HYFloatingIcon"
 FloatingIcon.Size = UDim2.new(0, 50, 0, 50)
 FloatingIcon.Position = UDim2.new(0.05, 0, 0.2, 0)
@@ -219,26 +230,30 @@ FloatingIcon.TextSize = 18
 FloatingIcon.TextColor3 = Theme.AccentBright
 FloatingIcon.AutoButtonColor = false
 FloatingIcon.Visible = false
+FloatingIcon.Parent = ScreenGui
 Instance.new("UICorner", FloatingIcon).CornerRadius = UDim.new(0, 12)
-Instance.new("UIStroke", FloatingIcon).Color = Theme.Accent
-FloatingIcon.UIStroke.Thickness = 2
+local IconStroke = Instance.new("UIStroke", FloatingIcon)
+IconStroke.Color = Theme.Accent
+IconStroke.Thickness = 2
 
-local MainWindow = Instance.new("Frame", ScreenGui)
+local MainWindow = Instance.new("Frame")
 MainWindow.Name = "MainWindow"
 MainWindow.Size = UDim2.new(0, 620, 0, 340)
 MainWindow.Position = UDim2.new(0.5, -310, 0.5, -170)
 MainWindow.BackgroundColor3 = Theme.BgMain
 MainWindow.BorderSizePixel = 0
 MainWindow.ClipsDescendants = true
+MainWindow.Parent = ScreenGui
 Instance.new("UICorner", MainWindow).CornerRadius = UDim.new(0, 12)
 local WinStroke = Instance.new("UIStroke", MainWindow)
 WinStroke.Color = Theme.Stroke
 WinStroke.Thickness = 1.5
 
-local Sidebar = Instance.new("Frame", MainWindow)
+local Sidebar = Instance.new("Frame")
 Sidebar.Size = UDim2.new(0, 180, 1, 0)
 Sidebar.BackgroundColor3 = Theme.BgSidebar
 Sidebar.BorderSizePixel = 0
+Sidebar.Parent = MainWindow
 Instance.new("UICorner", Sidebar).CornerRadius = UDim.new(0, 12)
 local SideBorder = Instance.new("Frame", Sidebar)
 SideBorder.Size = UDim2.new(0, 1, 1, 0)
@@ -319,7 +334,9 @@ local dragging, dragInput, dragStart, startPos
 local function SetupDrag(frame)
     frame.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true dragStart = input.Position startPos = MainWindow.Position
+            dragging = true
+            dragStart = input.Position
+            startPos = MainWindow.Position
             input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
         end
     end)
@@ -513,7 +530,7 @@ AddToggle(TabFarm, "Auto Farm Coins (Under Map)", false, function(v)
     if not v and not Settings.AutoFarmEvents then ForceStandUpright() end
 end)
 
-AddToggle(TabFarm, "Auto Farm Candies/Events", false, function(v)
+AddToggle(TabFarm, "Auto Farm Candies & Snowflakes", false, function(v)
     Settings.AutoFarmEvents = v
     table.clear(CollectedCoins)
     if not v and not Settings.AutoFarmCoins then ForceStandUpright() end
@@ -527,32 +544,50 @@ AddToggle(TabFarm, "Auto Reset When Bag Full", false, function(v)
     Settings.AutoResetAfterFarm = v
 end)
 
-AddSlider(TabFarm, "Farm Speed (Vertex Mode)", 14, 28, 22, function(val)
+AddSlider(TabFarm, "Farm Movement Speed (Up to 30)", 14, 30, 22, function(val)
     Settings.FarmSpeed = val
 end)
 
 -- ============================================================================
--- AUTOFARM PURE CFRAME (VERTEX METHOD)
+-- AUTOFARM PURE CFRAME (EXACT V9 VERTEX METHOD)
 -- ============================================================================
+local function GetCoinBasePart(obj)
+    if obj:IsA("BasePart") then return obj end
+    if obj:IsA("Model") then return obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart") end
+    return nil
+end
+
+local function IsCoinCollectible(coinObj)
+    if not coinObj or not coinObj.Parent then return false end
+    local expTime = CollectedCoins[coinObj]
+    if expTime and os.clock() < expTime then return false end
+    local part = GetCoinBasePart(coinObj)
+    if not part then return false end
+    local visual = coinObj:FindFirstChild("CoinVisual")
+    if visual and visual:IsA("BasePart") and visual.Transparency >= 0.95 then return false end
+    if part.Transparency >= 0.95 and not visual then return false end
+    return true
+end
+
 local function GetSafestMapCoin()
     local myRoot = GetRootPart(LocalPlayer)
     if not myRoot or not CachedCoinContainer or not CachedCoinContainer.Parent then return nil, nil end
     local murderer = FindMurderer()
-    local murdRoot = murderer and GetRootPart(murderer)
+    local murdRoot = (murderer ~= LocalPlayer) and GetRootPart(murderer) or nil
     local myPos = myRoot.Position
     local bestPart, bestObj = nil, nil
     local bestScore = -math.huge
 
     for _, child in ipairs(CachedCoinContainer:GetChildren()) do
-        local expTime = CollectedCoins[child]
-        if not expTime or os.clock() >= expTime then
-            local part = child:IsA("BasePart") and child or child:FindFirstChildWhichIsA("BasePart")
-            if part and part.Transparency < 0.9 then
-                local distToMe = (part.Position - myPos).Magnitude
+        if IsCoinCollectible(child) then
+            local part = GetCoinBasePart(child)
+            if part then
+                local coinPos = part.Position
+                local distToMe = (coinPos - myPos).Magnitude
                 if murdRoot and Settings.AvoidMurdererFarm then
-                    local distToMurd = (part.Position - murdRoot.Position).Magnitude
+                    local distToMurd = (coinPos - murdRoot.Position).Magnitude
                     if distToMurd >= 35 then
-                        local score = (distToMurd * 1.5) - distToMe
+                        local score = (distToMurd * 2) - distToMe
                         if score > bestScore then bestScore = score bestPart = part bestObj = child end
                     end
                 else
@@ -562,40 +597,27 @@ local function GetSafestMapCoin()
             end
         end
     end
-    -- Fallback
+    -- Fallback if AvoidMurderer blocked all coins
     if not bestPart and CachedCoinContainer then
         for _, child in ipairs(CachedCoinContainer:GetChildren()) do
-            local exp = CollectedCoins[child]
-            if not exp or os.clock() >= exp then
-                local part = child:IsA("BasePart") and child or child:FindFirstChildWhichIsA("BasePart")
-                if part and part.Transparency < 0.9 then return part, child end
+            if IsCoinCollectible(child) then
+                local part = GetCoinBasePart(child)
+                if part then return part, child end
             end
         end
     end
     return bestPart, bestObj
 end
 
--- NOCLIP
-RunService.Stepped:Connect(function()
-    local myChar = GetCharacter(LocalPlayer)
-    if not myChar then return end
-    local isFarming = (Settings.AutoFarmCoins or Settings.AutoFarmEvents) and IsPlayerInActiveMap(LocalPlayer) and not CachedBagIsFull
+local ProneAngles = CFrame.Angles(math.rad(90), 0, 0)
 
-    if isFarming then
-        for _, part in ipairs(myChar:GetDescendants()) do
-            if part:IsA("BasePart") then part.CanCollide = false end
-        end
-    end
-end)
-
--- PHYSICS LOOP
 RunService.Heartbeat:Connect(function(dt)
     local myChar = GetCharacter(LocalPlayer)
     local myRoot = GetRootPart(LocalPlayer)
     local hum = GetHumanoid(LocalPlayer)
     if not (myChar and myRoot and hum and hum.Health > 0) then return end
 
-    -- PURE CFRAME AUTOFARM (SPEED 25+)
+    -- PURE CFRAME AUTOFARM (No Physics needed)
     if Settings.AutoFarmCoins or Settings.AutoFarmEvents then
         if not IsPlayerInActiveMap(LocalPlayer) or CachedBagIsFull then
             if hum.PlatformStand then ForceStandUpright() end
@@ -606,6 +628,7 @@ RunService.Heartbeat:Connect(function(dt)
         if not targetPart then return end
 
         hum.PlatformStand = true
+        for _, part in ipairs(myChar:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end
         myRoot.AssemblyLinearVelocity = Vector3.zero
         myRoot.AssemblyAngularVelocity = Vector3.zero
 
@@ -616,14 +639,13 @@ RunService.Heartbeat:Connect(function(dt)
         local stepDist = Settings.FarmSpeed * dt
 
         if dist3D <= math.max(stepDist * 1.5, 2.5) then
-            myRoot.CFrame = CFrame.new(goalPos) * CFrame.Angles(math.rad(90), 0, 0)
+            myRoot.CFrame = CFrame.new(goalPos) * ProneAngles
             if firetouchinterest then
                 pcall(function() firetouchinterest(myRoot, targetPart, 0) firetouchinterest(myRoot, targetPart, 1) end)
             end
             CollectedCoins[targetObj] = os.clock() + 3.0
         else
-            myRoot.CFrame = CFrame.new(curPos + (deltaVec.Unit * stepDist)) * CFrame.Angles(math.rad(90), 0, 0)
+            myRoot.CFrame = CFrame.new(curPos + (deltaVec.Unit * stepDist)) * ProneAngles
         end
     end
 end)
-
