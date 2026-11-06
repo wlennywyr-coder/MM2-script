@@ -1,0 +1,959 @@
+--==============================================================================
+-- HARMONY MINI • MM2 HALLOWEEN ZOMBIE / INFECTION EDITION
+--==============================================================================
+
+local cloneref = cloneref or function(inst) return inst end
+local Services = setmetatable({}, {
+	__index = function(self, name)
+		local ok, svc = pcall(function() return cloneref(game:GetService(name)) end)
+		if ok and svc then rawset(self, name, svc) return svc end
+		return nil
+	end
+})
+
+local Players = Services.Players
+local RunService = Services.RunService
+local TweenService = Services.TweenService
+local UserInputService = Services.UserInputService
+local ReplicatedStorage = Services.ReplicatedStorage
+local Workspace = Services.Workspace
+
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+	Players.PlayerAdded:Wait()
+	LocalPlayer = Players.LocalPlayer
+end
+local LocalMouse = LocalPlayer:GetMouse()
+local fireTouch = firetouchinterest or firetouchtransmitter
+
+local function GetSafeGuiParent()
+	if type(gethui) == "function" then
+		local ok, hui = pcall(gethui)
+		if ok and typeof(hui) == "Instance" then return hui end
+	end
+	local okCore, coreGui = pcall(function() return Services.CoreGui end)
+	if okCore and coreGui then
+		local testOk = pcall(function()
+			local f = Instance.new("Folder")
+			f.Parent = coreGui
+			f:Destroy()
+		end)
+		if testOk then return coreGui end
+	end
+	return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local GuiParent = GetSafeGuiParent()
+for _, child in ipairs(GuiParent:GetChildren()) do
+	if child.Name == "HarmonyZombie_MM2" then
+		pcall(function() child:Destroy() end)
+	end
+end
+
+--==============================================================================
+-- CONFIGURATION & ÉTAT
+--==============================================================================
+
+local Config = {
+	ZombieSilentAim = false,
+	AutoShootZombie = false,
+	ShootZombieKey = "Q",
+	AntiInfection = false,
+	AutoInfectSurvivors = false,
+	ZombieKillAura = false,
+	CandyAutoFarm = false,
+	InfectionESP = false,
+	SelectedTheme = "Sakura Blossom"
+}
+
+local Runtime = {
+	Connections = {},
+	Highlights = {},
+	SilentAimGunConn = nil,
+	SilentAimMouseConn = nil,
+	WatchedGuns = {},
+	ShootCooldown = 0,
+	IsCurrentlyFarming = false,
+	FarmBodyVelocity = nil,
+	ActiveTween = nil,
+	VisitedCandies = {},
+	CachedCoinContainer = nil
+}
+
+local function AddConnection(sig, cb)
+	local c = sig:Connect(cb)
+	table.insert(Runtime.Connections, c)
+	return c
+end
+
+--==============================================================================
+-- DÉTECTION DES ZOMBIES ET SURVIVANTS (MULTI-CIBLES INFECTION)
+--==============================================================================
+
+local function GetCharacter(plr)
+	plr = plr or LocalPlayer
+	return plr and plr.Character
+end
+
+local function GetRootPart(plr)
+	local char = GetCharacter(plr)
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function GetHumanoid(plr)
+	local char = GetCharacter(plr)
+	return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function IsAlive(plr)
+	local hum = GetHumanoid(plr)
+	local hrp = GetRootPart(plr)
+	return hum and hrp and hum.Health > 0
+end
+
+local function GetMM2Tool(plr, weaponType)
+	if not plr then return nil end
+	local function Search(container)
+		if not container then return nil end
+		for _, item in ipairs(container:GetChildren()) do
+			if item:IsA("Tool") then
+				if weaponType == "Gun" then
+					if item.Name == "Gun" or item.Name == "Revolver" or item:FindFirstChild("Shoot", true) or item:FindFirstChild("CreateBeam", true) then
+						if not item:FindFirstChild("Stab", true) and item.Name ~= "Knife" then
+							return item
+						end
+					end
+				elseif weaponType == "Knife" then
+					if item.Name == "Knife" or item:FindFirstChild("Stab", true) or item:FindFirstChild("Slash", true) then
+						return item
+					end
+				end
+			end
+		end
+		return nil
+	end
+	return Search(GetCharacter(plr)) or Search(plr:FindFirstChildOfClass("Backpack"))
+end
+
+-- En mode Infection : Zombie = possède un Knife (ou Team Zombie/Infected) ; Survivant = possède un Gun
+local function GetInfectionRole(plr)
+	if not plr or not IsAlive(plr) then return "None" end
+	if GetMM2Tool(plr, "Knife") then
+		return "Zombie"
+	elseif GetMM2Tool(plr, "Gun") then
+		return "Survivor"
+	end
+	if plr.Team then
+		local tName = string.lower(plr.Team.Name)
+		if string.find(tName, "zombie") or string.find(tName, "infect") then
+			return "Zombie"
+		elseif string.find(tName, "survivor") then
+			return "Survivor"
+		end
+	end
+	return "Survivor"
+end
+
+-- Trouve le Zombie en vie le plus proche du joueur local (avec option Wallcheck)
+local function GetClosestZombie(requireVisible)
+	local localHRP = GetRootPart(LocalPlayer)
+	if not localHRP then return nil, math.huge end
+
+	local bestZombie = nil
+	local bestDist = math.huge
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer and IsAlive(plr) and GetInfectionRole(plr) == "Zombie" then
+			local zHRP = GetRootPart(plr)
+			if zHRP then
+				local dist = (zHRP.Position - localHRP.Position).Magnitude
+				if dist < bestDist then
+					if requireVisible then
+						local rayParams = RaycastParams.new()
+						rayParams.FilterType = Enum.RaycastFilterType.Exclude
+						rayParams.FilterDescendantsInstances = { GetCharacter(LocalPlayer), GetCharacter(plr) }
+						local hit = Workspace:Raycast(localHRP.Position, zHRP.Position - localHRP.Position, rayParams)
+						if not hit then
+							bestDist = dist
+							bestZombie = plr
+						end
+					else
+						bestDist = dist
+						bestZombie = plr
+					end
+				end
+			end
+		end
+	end
+
+	return bestZombie, bestDist
+end
+
+-- Trouve le Survivant le plus proche (quand on est soi-même Zombie)
+local function GetClosestSurvivor()
+	local localHRP = GetRootPart(LocalPlayer)
+	if not localHRP then return nil, math.huge end
+
+	local bestSurvivor = nil
+	local bestDist = math.huge
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer and IsAlive(plr) and GetInfectionRole(plr) == "Survivor" then
+			local sHRP = GetRootPart(plr)
+			if sHRP then
+				local dist = (sHRP.Position - localHRP.Position).Magnitude
+				if dist < bestDist then
+					bestDist = dist
+					bestSurvivor = plr
+				end
+			end
+		end
+	end
+
+	return bestSurvivor, bestDist
+end
+
+local function GetPredictedZombiePos(zombiePlr)
+	local char = GetCharacter(zombiePlr)
+	local hrp = GetRootPart(zombiePlr)
+	local hum = GetHumanoid(zombiePlr)
+	if not char or not hrp then return nil, nil end
+
+	local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or hrp
+	local center = (hrp.Position * 0.65) + (torso.Position * 0.35)
+	local vel = hrp.AssemblyLinearVelocity or Vector3.zero
+
+	local ping = 0.065
+	pcall(function()
+		local np = LocalPlayer:GetNetworkPing()
+		if type(np) == "number" and np > 0 then ping = math.clamp(np, 0.02, 0.22) end
+	end)
+
+	local hVel = Vector3.new(vel.X, 0, vel.Z)
+	local moveVel = (hum and hum.MoveDirection.Magnitude > 0.05) and (hum.MoveDirection.Unit * 16) or hVel
+	local effVel = (hVel * 0.55) + (moveVel * 0.45)
+
+	local offset = effVel * (0.13 + ping * 0.6)
+	if offset.Magnitude > 2.6 then offset = offset.Unit * 2.6 end
+
+	local vOffset = (math.abs(vel.Y) > 2) and math.clamp(vel.Y * 0.07, -1.1, 1.3) or 0
+	local predPos = center + offset + Vector3.new(0, vOffset, 0)
+	return predPos, CFrame.new(predPos)
+end
+
+--==============================================================================
+-- INTERFACE GRAPHIQUE COMPACTE HARMONY MINI (THÈMES PASTEL + CTRL)
+--==============================================================================
+
+local PastelThemes = {
+	["Sakura Blossom"] = {
+		MainBg = Color3.fromRGB(68, 36, 52),
+		CardBg = Color3.fromRGB(84, 45, 65),
+		ControlBg = Color3.fromRGB(104, 56, 80),
+		Stroke = Color3.fromRGB(255, 168, 204),
+		Accent = Color3.fromRGB(255, 132, 182),
+		GradStart = Color3.fromRGB(94, 48, 72),
+		GradEnd = Color3.fromRGB(58, 28, 44)
+	},
+	["Matcha Mint"] = {
+		MainBg = Color3.fromRGB(34, 64, 54),
+		CardBg = Color3.fromRGB(42, 80, 68),
+		ControlBg = Color3.fromRGB(54, 98, 84),
+		Stroke = Color3.fromRGB(156, 242, 202),
+		Accent = Color3.fromRGB(118, 230, 180),
+		GradStart = Color3.fromRGB(48, 88, 74),
+		GradEnd = Color3.fromRGB(28, 52, 44)
+	},
+	["Lavender Macaron"] = {
+		MainBg = Color3.fromRGB(52, 42, 80),
+		CardBg = Color3.fromRGB(66, 54, 100),
+		ControlBg = Color3.fromRGB(82, 68, 122),
+		Stroke = Color3.fromRGB(204, 174, 255),
+		Accent = Color3.fromRGB(184, 144, 255),
+		GradStart = Color3.fromRGB(74, 58, 112),
+		GradEnd = Color3.fromRGB(42, 34, 66)
+	},
+	["Sky Bluebell"] = {
+		MainBg = Color3.fromRGB(34, 56, 84),
+		CardBg = Color3.fromRGB(44, 70, 104),
+		ControlBg = Color3.fromRGB(56, 88, 128),
+		Stroke = Color3.fromRGB(158, 216, 255),
+		Accent = Color3.fromRGB(122, 198, 255),
+		GradStart = Color3.fromRGB(48, 78, 116),
+		GradEnd = Color3.fromRGB(28, 46, 70)
+	}
+}
+
+local Palette = PastelThemes[Config.SelectedTheme]
+local ThemeUpdaters = {}
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "HarmonyZombie_MM2"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = GuiParent
+
+local MiniIcon = Instance.new("TextButton")
+MiniIcon.Size = UDim2.new(0, 130, 0, 32)
+MiniIcon.Position = UDim2.new(0.5, -65, 0.08, 0)
+MiniIcon.BackgroundColor3 = Palette.MainBg
+MiniIcon.BorderSizePixel = 0
+MiniIcon.Text = "Harmony • Zombie"
+MiniIcon.Font = Enum.Font.FredokaOne
+MiniIcon.TextSize = 14
+MiniIcon.TextColor3 = Palette.Stroke
+MiniIcon.AutoButtonColor = false
+MiniIcon.Visible = false
+MiniIcon.Parent = ScreenGui
+
+local MiniCorner = Instance.new("UICorner")
+MiniCorner.CornerRadius = UDim.new(1, 0)
+MiniCorner.Parent = MiniIcon
+
+local MiniStroke = Instance.new("UIStroke")
+MiniStroke.Color = Palette.Stroke
+MiniStroke.Thickness = 1.5
+MiniStroke.Parent = MiniIcon
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 340, 0, 370)
+MainFrame.Position = UDim2.new(0.5, -170, 0.5, -185)
+MainFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = MainFrame
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Palette.Stroke
+MainStroke.Thickness = 1.6
+MainStroke.Parent = MainFrame
+
+local MainGrad = Instance.new("UIGradient")
+MainGrad.Rotation = 45
+MainGrad.Color = ColorSequence.new(Palette.GradStart, Palette.GradEnd)
+MainGrad.Parent = MainFrame
+
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, -24, 0, 40)
+Header.Position = UDim2.new(0, 12, 0, 4)
+Header.BackgroundTransparency = 1
+Header.Parent = MainFrame
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -40, 1, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "Harmony • Zombie Mode"
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 15
+Title.TextColor3 = Color3.fromRGB(252, 250, 255)
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+local MinBtn = Instance.new("TextButton")
+MinBtn.Size = UDim2.new(0, 26, 0, 26)
+MinBtn.Position = UDim2.new(1, -26, 0.5, -13)
+MinBtn.BackgroundColor3 = Palette.Accent
+MinBtn.BorderSizePixel = 0
+MinBtn.Text = "-"
+MinBtn.Font = Enum.Font.GothamBold
+MinBtn.TextSize = 18
+MinBtn.TextColor3 = Color3.fromRGB(35, 20, 30)
+MinBtn.AutoButtonColor = false
+MinBtn.Parent = Header
+
+local MinBtnCorner = Instance.new("UICorner")
+MinBtnCorner.CornerRadius = UDim.new(0, 6)
+MinBtnCorner.Parent = MinBtn
+
+local function ToggleMenuVisibility()
+	if MainFrame.Visible then
+		MainFrame.Visible = false
+		MiniIcon.Visible = true
+	else
+		MiniIcon.Visible = false
+		MainFrame.Visible = true
+	end
+end
+
+MinBtn.MouseButton1Click:Connect(ToggleMenuVisibility)
+
+AddConnection(UserInputService.InputBegan, function(input)
+	if not UserInputService:GetFocusedTextBox() then
+		if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+			ToggleMenuVisibility()
+		end
+	end
+end)
+
+-- Déplacement Fenêtre & Mini-Icône
+local function MakeDraggable(trigger, target, onTap)
+	local dragging, dragStart, startPos, moved = false, nil, nil, false
+	trigger.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			moved = false
+			dragStart = input.Position
+			startPos = target.Position
+		end
+	end)
+	AddConnection(UserInputService.InputChanged, function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			if delta.Magnitude > 5 then moved = true end
+			target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end)
+	AddConnection(UserInputService.InputEnded, function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+			dragging = false
+		end
+	end)
+	if onTap then
+		trigger.MouseButton1Click:Connect(function()
+			if not moved then onTap() end
+		end)
+	end
+end
+
+MakeDraggable(Header, MainFrame, nil)
+MakeDraggable(MiniIcon, MiniIcon, ToggleMenuVisibility)
+
+local Card = Instance.new("ScrollingFrame")
+Card.Size = UDim2.new(1, -24, 1, -56)
+Card.Position = UDim2.new(0, 12, 0, 44)
+Card.BackgroundColor3 = Palette.CardBg
+Card.BackgroundTransparency = 0.12
+Card.BorderSizePixel = 0
+Card.ScrollBarThickness = 2
+Card.ScrollBarImageColor3 = Palette.Stroke
+Card.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Card.CanvasSize = UDim2.new(0, 0, 0, 0)
+Card.Parent = MainFrame
+
+local CardCorner = Instance.new("UICorner")
+CardCorner.CornerRadius = UDim.new(0, 10)
+CardCorner.Parent = Card
+
+local CardStroke = Instance.new("UIStroke")
+CardStroke.Color = Palette.Stroke
+CardStroke.Thickness = 1.2
+CardStroke.Transparency = 0.2
+CardStroke.Parent = Card
+
+local CardPad = Instance.new("UIPadding")
+CardPad.PaddingTop = UDim.new(0, 8)
+CardPad.PaddingBottom = UDim.new(0, 8)
+CardPad.PaddingLeft = UDim.new(0, 12)
+CardPad.PaddingRight = UDim.new(0, 12)
+CardPad.Parent = Card
+
+local ListLayout = Instance.new("UIListLayout")
+ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ListLayout.Padding = UDim.new(0, 4)
+ListLayout.Parent = Card
+
+local OrderIdx = 0
+local function NextOrder() OrderIdx += 1 return OrderIdx end
+
+local function AddToggle(text, defaultVal, callback)
+	local row = Instance.new("Frame")
+	row.LayoutOrder = NextOrder()
+	row.Size = UDim2.new(1, 0, 0, 32)
+	row.BackgroundTransparency = 1
+	row.Parent = Card
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -50, 1, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = text
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.TextSize = 13
+	lbl.TextColor3 = Color3.fromRGB(250, 248, 255)
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = row
+
+	local pill = Instance.new("TextButton")
+	pill.Size = UDim2.new(0, 36, 0, 18)
+	pill.Position = UDim2.new(1, -36, 0.5, -9)
+	pill.BackgroundColor3 = defaultVal and Palette.Accent or Palette.ControlBg
+	pill.BorderSizePixel = 0
+	pill.Text = ""
+	pill.AutoButtonColor = false
+	pill.Parent = row
+
+	local pc = Instance.new("UICorner")
+	pc.CornerRadius = UDim.new(1, 0)
+	pc.Parent = pill
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.new(0, 12, 0, 12)
+	knob.Position = defaultVal and UDim2.new(1, -15, 0.5, -6) or UDim2.new(0, 3, 0.5, -6)
+	knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	knob.BorderSizePixel = 0
+	knob.Parent = pill
+
+	local kc = Instance.new("UICorner")
+	kc.CornerRadius = UDim.new(1, 0)
+	kc.Parent = knob
+
+	local state = defaultVal
+	local function Refresh()
+		TweenService:Create(pill, TweenInfo.new(0.15), {
+			BackgroundColor3 = state and Palette.Accent or Palette.ControlBg
+		}):Play()
+		TweenService:Create(knob, TweenInfo.new(0.15), {
+			Position = state and UDim2.new(1, -15, 0.5, -6) or UDim2.new(0, 3, 0.5, -6)
+		}):Play()
+	end
+	table.insert(ThemeUpdaters, Refresh)
+
+	pill.MouseButton1Click:Connect(function()
+		state = not state
+		Refresh()
+		if callback then task.spawn(callback, state) end
+	end)
+end
+
+local function AddKeybind(text, defaultKey, onPress)
+	local row = Instance.new("Frame")
+	row.LayoutOrder = NextOrder()
+	row.Size = UDim2.new(1, 0, 0, 32)
+	row.BackgroundTransparency = 1
+	row.Parent = Card
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -60, 1, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = text
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.TextSize = 13
+	lbl.TextColor3 = Color3.fromRGB(250, 248, 255)
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = row
+
+	local kBtn = Instance.new("TextButton")
+	kBtn.Size = UDim2.new(0, 44, 0, 20)
+	kBtn.Position = UDim2.new(1, -44, 0.5, -10)
+	kBtn.BackgroundColor3 = Palette.ControlBg
+	kBtn.BorderSizePixel = 0
+	kBtn.Text = defaultKey
+	kBtn.Font = Enum.Font.GothamBold
+	kBtn.TextSize = 12
+	kBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	kBtn.AutoButtonColor = false
+	kBtn.Parent = row
+
+	local kc = Instance.new("UICorner")
+	kc.CornerRadius = UDim.new(0, 5)
+	kc.Parent = kBtn
+
+	table.insert(ThemeUpdaters, function()
+		kBtn.BackgroundColor3 = Palette.ControlBg
+	end)
+
+	local curKey = defaultKey
+	local binding = false
+	kBtn.MouseButton1Click:Connect(function()
+		binding = true
+		kBtn.Text = "..."
+	end)
+
+	AddConnection(UserInputService.InputBegan, function(input, gp)
+		if binding and input.UserInputType == Enum.UserInputType.Keyboard then
+			binding = false
+			curKey = input.KeyCode.Name
+			kBtn.Text = curKey
+			return
+		end
+		if not gp and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode.Name == curKey then
+			if onPress then task.spawn(onPress) end
+		end
+	end)
+end
+
+local function AddButton(text, callback)
+	local btn = Instance.new("TextButton")
+	btn.LayoutOrder = NextOrder()
+	btn.Size = UDim2.new(1, 0, 0, 30)
+	btn.BackgroundColor3 = Palette.ControlBg
+	btn.BackgroundTransparency = 0.25
+	btn.BorderSizePixel = 0
+	btn.Text = "  " .. text
+	btn.Font = Enum.Font.GothamMedium
+	btn.TextSize = 12
+	btn.TextColor3 = Color3.fromRGB(250, 248, 255)
+	btn.TextXAlignment = Enum.TextXAlignment.Left
+	btn.AutoButtonColor = false
+	btn.Parent = Card
+
+	local bc = Instance.new("UICorner")
+	bc.CornerRadius = UDim.new(0, 6)
+	bc.Parent = btn
+
+	table.insert(ThemeUpdaters, function()
+		btn.BackgroundColor3 = Palette.ControlBg
+	end)
+
+	btn.MouseButton1Click:Connect(function()
+		if callback then task.spawn(callback) end
+	end)
+end
+
+--==============================================================================
+-- LOGIQUE COMBAT SURVIVANT & ZOMBIE
+--==============================================================================
+
+local function DispatchGunRemotes(gunTool, targetPos, targetCF)
+	if not gunTool or not targetPos then return end
+	local localHRP = GetRootPart(LocalPlayer)
+	local handle = gunTool:FindFirstChild("Handle")
+	local originPos = (handle and handle:IsA("BasePart") and handle.Position)
+		or (localHRP and localHRP.Position)
+		or targetPos
+	local originLookCF = CFrame.lookAt(originPos, targetPos)
+	local finalTargetCF = targetCF or CFrame.new(targetPos)
+
+	local shootRemote = gunTool:FindFirstChild("Shoot", true)
+	if shootRemote then
+		task.spawn(function()
+			pcall(function()
+				if shootRemote:IsA("RemoteEvent") then
+					shootRemote:FireServer(originLookCF, finalTargetCF)
+				elseif shootRemote:IsA("RemoteFunction") then
+					shootRemote:InvokeServer(originLookCF, finalTargetCF)
+				end
+			end)
+		end)
+	end
+
+	local createBeam = gunTool:FindFirstChild("CreateBeam", true)
+	if createBeam then
+		local rf = createBeam:FindFirstChild("RemoteFunction") or createBeam:FindFirstChildWhichIsA("RemoteFunction")
+		if rf then
+			task.spawn(function()
+				pcall(function() rf:InvokeServer(1, targetPos, "AH2") end)
+			end)
+		end
+	end
+end
+
+local function ShootClosestZombie(requireEquipped)
+	if os.clock() - Runtime.ShootCooldown < 0.06 then return end
+	if not IsAlive(LocalPlayer) then return end
+
+	local char = GetCharacter(LocalPlayer)
+	local hum = GetHumanoid(LocalPlayer)
+	local gun = GetMM2Tool(LocalPlayer, "Gun")
+	if not char or not hum or not gun then return end
+
+	if requireEquipped and gun.Parent ~= char then return end
+
+	local zombie = GetClosestZombie(false)
+	if not zombie or not IsAlive(zombie) then return end
+
+	Runtime.ShootCooldown = os.clock()
+
+	if gun.Parent ~= char then
+		pcall(function() hum:EquipTool(gun) end)
+		if gun.Parent ~= char then pcall(function() gun.Parent = char end) end
+	end
+
+	local predPos, predCF = GetPredictedZombiePos(zombie)
+	if predPos then
+		DispatchGunRemotes(gun, predPos, predCF)
+	end
+
+	for _, d in ipairs({0.015, 0.04, 0.08}) do
+		task.delay(d, function()
+			if gun and gun.Parent == char then
+				local z = GetClosestZombie(false)
+				if z and IsAlive(z) then
+					local p, cf = GetPredictedZombiePos(z)
+					if p then DispatchGunRemotes(gun, p, cf) end
+				end
+			end
+		end)
+	end
+end
+
+-- Silent Aim LIFO sur le Zombie le plus proche
+local function DisconnectSilentHooks()
+	if Runtime.SilentAimGunConn then pcall(function() Runtime.SilentAimGunConn:Disconnect() end) Runtime.SilentAimGunConn = nil end
+	if Runtime.SilentAimMouseConn then pcall(function() Runtime.SilentAimMouseConn:Disconnect() end) Runtime.SilentAimMouseConn = nil end
+end
+
+local function RebindZombieSilentAim(gun)
+	if not Config.ZombieSilentAim or not gun then
+		DisconnectSilentHooks()
+		return
+	end
+	local char = GetCharacter(LocalPlayer)
+	if not char or gun.Parent ~= char then
+		DisconnectSilentHooks()
+		return
+	end
+
+	DisconnectSilentHooks()
+	Runtime.SilentAimGunConn = gun.Activated:Connect(function()
+		ShootClosestZombie(true)
+	end)
+	if LocalMouse then
+		Runtime.SilentAimMouseConn = LocalMouse.Button1Down:Connect(function()
+			if gun.Parent == char then ShootClosestZombie(true) end
+		end)
+	end
+end
+
+task.spawn(function()
+	while ScreenGui.Parent do
+		local gun = GetMM2Tool(LocalPlayer, "Gun")
+		local char = GetCharacter(LocalPlayer)
+		if Config.ZombieSilentAim and char and gun and gun.Parent == char then
+			RebindZombieSilentAim(gun)
+		else
+			DisconnectSilentHooks()
+		end
+		task.wait(0.05)
+	end
+end)
+
+--==============================================================================
+-- CONTRÔLES DU MENU ZOMBIE
+--==============================================================================
+
+AddToggle("Zombie Silent Aim (Closest)", false, function(v)
+	Config.ZombieSilentAim = v
+end)
+
+AddToggle("Auto Shoot Visible Zombie", false, function(v)
+	Config.AutoShootZombie = v
+end)
+
+AddKeybind("Shoot Closest Zombie", "Q", function()
+	ShootClosestZombie(false)
+end)
+
+AddToggle("Anti-Infection (Keep Distance)", false, function(v)
+	Config.AntiInfection = v
+end)
+
+AddToggle("Zombie Kill Aura (If Infected)", false, function(v)
+	Config.ZombieKillAura = v
+end)
+
+AddToggle("Auto Infect All (If Infected)", false, function(v)
+	Config.AutoInfectSurvivors = v
+end)
+
+AddToggle("Candy Auto Farm (24 studs/s)", false, function(v)
+	Config.CandyAutoFarm = v
+	if not v and Runtime.FarmBodyVelocity then
+		pcall(function() Runtime.FarmBodyVelocity:Destroy() end)
+		Runtime.FarmBodyVelocity = nil
+	end
+end)
+
+AddToggle("Zombie & Survivor ESP", false, function(v)
+	Config.InfectionESP = v
+	if not v then
+		for _, hl in pairs(Runtime.Highlights) do pcall(function() hl:Destroy() end) end
+		table.clear(Runtime.Highlights)
+	end
+end)
+
+for themeName, tData in pairs(PastelThemes) do
+	AddButton("Theme • " .. themeName, function()
+		Palette = tData
+		MainStroke.Color = Palette.Stroke
+		MainGrad.Color = ColorSequence.new(Palette.GradStart, Palette.GradEnd)
+		Card.BackgroundColor3 = Palette.CardBg
+		CardStroke.Color = Palette.Stroke
+		MinBtn.BackgroundColor3 = Palette.Accent
+		MiniIcon.BackgroundColor3 = Palette.MainBg
+		MiniIcon.TextColor3 = Palette.Stroke
+		MiniStroke.Color = Palette.Stroke
+		for _, fn in ipairs(ThemeUpdaters) do pcall(fn) end
+	end)
+end
+
+--==============================================================================
+-- BOUCLES TEMPS RÉEL (ANTI-INFECTION, COMBAT ZOMBIE, ESP & CANDY FARM)
+--==============================================================================
+
+AddConnection(RunService.Heartbeat, function()
+	if not IsAlive(LocalPlayer) then return end
+	local localHRP = GetRootPart(LocalPlayer)
+	local localChar = GetCharacter(LocalPlayer)
+	local localHum = GetHumanoid(LocalPlayer)
+	if not localHRP or not localChar or not localHum then return end
+
+	local myRole = GetInfectionRole(LocalPlayer)
+
+	-- 1. Anti-Infection : décale automatiquement le Survivant si un Zombie s'approche à moins de 16 studs
+	if Config.AntiInfection and myRole == "Survivor" then
+		local closestZ, dist = GetClosestZombie(false)
+		if closestZ and dist < 16 then
+			local zHRP = GetRootPart(closestZ)
+			if zHRP then
+				local awayDir = (localHRP.Position - zHRP.Position)
+				awayDir = Vector3.new(awayDir.X, 0, awayDir.Z)
+				if awayDir.Magnitude > 0.05 then
+					localHRP.CFrame = localHRP.CFrame + (awayDir.Unit * 14)
+				end
+			end
+		end
+	end
+
+	-- 2. Zombie Kill Aura & Auto Infect (quand on est Zombie)
+	if myRole == "Zombie" and (Config.ZombieKillAura or Config.AutoInfectSurvivors) then
+		local knife = GetMM2Tool(LocalPlayer, "Knife")
+		if knife then
+			if knife.Parent ~= localChar then
+				pcall(function() localHum:EquipTool(knife) end)
+			end
+			local survivor, sDist = GetClosestSurvivor()
+			if survivor and IsAlive(survivor) then
+				local sHRP = GetRootPart(survivor)
+				if sHRP and (Config.AutoInfectSurvivors or sDist <= 35) then
+					sHRP.CFrame = localHRP.CFrame * CFrame.new(0, 0, -2.2)
+					local stab = knife:FindFirstChild("Stab", true) or knife:FindFirstChildWhichIsA("RemoteEvent", true)
+					if stab then pcall(function() stab:FireServer("Slash") end) end
+					pcall(function() knife:Activate() end)
+				end
+			end
+		end
+	end
+end)
+
+-- Boucle Auto Shoot Visible Zombie (idéal pour le défi Purifier 16 Zombies)
+task.spawn(function()
+	while ScreenGui.Parent do
+		if Config.AutoShootZombie and IsAlive(LocalPlayer) and GetInfectionRole(LocalPlayer) == "Survivor" then
+			local visibleZombie = GetClosestZombie(true)
+			if visibleZombie then
+				ShootClosestZombie(false)
+			end
+		end
+		task.wait(0.15)
+	end
+end)
+
+-- Boucle ESP Zombies (Rouge) & Survivants (Vert/Bleu)
+task.spawn(function()
+	while ScreenGui.Parent do
+		if Config.InfectionESP then
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= LocalPlayer and IsAlive(plr) then
+					local char = GetCharacter(plr)
+					local role = GetInfectionRole(plr)
+					local col = (role == "Zombie") and Color3.fromRGB(255, 65, 95) or Color3.fromRGB(90, 220, 255)
+					if char then
+						local hl = Runtime.Highlights[plr]
+						if not hl or hl.Parent ~= char then
+							if hl then pcall(function() hl:Destroy() end) end
+							hl = Instance.new("Highlight")
+							hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+							hl.FillTransparency = 0.45
+							hl.Adornee = char
+							hl.Parent = char
+							Runtime.Highlights[plr] = hl
+						end
+						hl.FillColor = col
+						hl.OutlineColor = col
+					end
+				elseif Runtime.Highlights[plr] then
+					pcall(function() Runtime.Highlights[plr]:Destroy() end)
+					Runtime.Highlights[plr] = nil
+				end
+			end
+		end
+		task.wait(0.25)
+	end
+end)
+
+-- Boucle Candy Auto Farm Underground (24 studs/s en évitant les Zombies)
+AddConnection(RunService.Stepped, function()
+	if Config.CandyAutoFarm and Runtime.IsCurrentlyFarming and LocalPlayer.Character then
+		for _, part in ipairs(LocalPlayer.Character:GetChildren()) do
+			if part:IsA("BasePart") and part.CanCollide then
+				part.CanCollide = false
+			end
+		end
+	end
+end)
+
+task.spawn(function()
+	local rot = CFrame.Angles(math.rad(90), 0, 0)
+	while ScreenGui.Parent do
+		if Config.CandyAutoFarm and IsAlive(LocalPlayer) then
+			local cc = Workspace:FindFirstChild("CoinContainer", true)
+			local localHRP = GetRootPart(LocalPlayer)
+			local localHum = GetHumanoid(LocalPlayer)
+			if cc and localHRP and localHum then
+				Runtime.IsCurrentlyFarming = true
+				if not Runtime.FarmBodyVelocity or Runtime.FarmBodyVelocity.Parent ~= localHRP then
+					if Runtime.FarmBodyVelocity then pcall(function() Runtime.FarmBodyVelocity:Destroy() end) end
+					local bv = Instance.new("BodyVelocity")
+					bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+					bv.Velocity = Vector3.zero
+					bv.Parent = localHRP
+					Runtime.FarmBodyVelocity = bv
+				end
+				localHum.PlatformStand = true
+
+				local bestCandy, bestDist = nil, math.huge
+				for _, item in ipairs(cc:GetChildren()) do
+					if not Runtime.VisitedCandies[item] then
+						local cv = item:FindFirstChild("CoinVisual")
+						local part = item:IsA("BasePart") and item or (cv and cv:IsA("BasePart") and cv) or item:FindFirstChildWhichIsA("BasePart")
+						local vis = (cv and cv:IsA("BasePart")) and cv or part
+						if part and vis and vis.Transparency < 1 then
+							local d = (part.Position - localHRP.Position).Magnitude
+							if d < bestDist then
+								bestDist = d
+								bestCandy = { Item = item, Part = part, Vis = vis }
+							end
+						end
+					end
+				end
+
+				if bestCandy and bestCandy.Part.Parent then
+					local cPos = bestCandy.Part.Position
+					local targetCF = CFrame.new(cPos.X, cPos.Y - 2.8, cPos.Z) * rot
+					local dist = (targetCF.Position - localHRP.Position).Magnitude
+					local dur = math.max(dist / 24, 0.05)
+
+					local tw = TweenService:Create(localHRP, TweenInfo.new(dur, Enum.EasingStyle.Linear), { CFrame = targetCF })
+					tw:Play()
+					local t0 = os.clock()
+					while Config.CandyAutoFarm and IsAlive(LocalPlayer) and bestCandy.Vis.Parent and bestCandy.Vis.Transparency < 1 and (os.clock() - t0) < dur do
+						if (localHRP.Position - targetCF.Position).Magnitude <= 3.2 and type(fireTouch) == "function" then
+							pcall(function()
+								fireTouch(localHRP, bestCandy.Part, 0)
+								fireTouch(localHRP, bestCandy.Part, 1)
+							end)
+						end
+						task.wait(0.04)
+					end
+					pcall(function() tw:Cancel() end)
+					Runtime.VisitedCandies[bestCandy.Item] = true
+				else
+					table.clear(Runtime.VisitedCandies)
+					task.wait(0.2)
+				end
+			else
+				Runtime.IsCurrentlyFarming = false
+				if Runtime.FarmBodyVelocity then pcall(function() Runtime.FarmBodyVelocity:Destroy() end) Runtime.FarmBodyVelocity = nil end
+				task.wait(0.3)
+			end
+		else
+			Runtime.IsCurrentlyFarming = false
+			task.wait(0.25)
+		end
+		task.wait(0.04)
+	end
+end)
