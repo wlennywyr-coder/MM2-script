@@ -178,6 +178,7 @@ local Config = {
 	AutoShootMurderer = false,
 	ShootMurdererKey = "Q",
 	FlickShootKey = "E",
+	AimbotLockKey = "C",
 
 	-- Webhook
 	WebhookURL = "",
@@ -226,6 +227,7 @@ local Runtime = {
 	SilentAimGunConn = nil,
 	SilentAimMouseConn = nil,
 	WatchedGuns = {},
+	AimbotLocked = false,
 	IsFlinging = false,
 	FlingBodyAngular = nil,
 	PreFlingCFrame = nil,
@@ -242,6 +244,7 @@ local Runtime = {
 	HasResetThisRound = false,
 	HasReturnedToMapThisRound = false,
 	CachedCoinContainer = nil,
+	CurrentMapFloorY = nil,
 	LastWebhookSend = os.clock(),
 	AntiAFKEnabled = false,
 	ActiveTween = nil,
@@ -369,8 +372,6 @@ local function UpdateRolesScan()
 		local myData = playerData[LocalPlayer.Name]
 		if type(myData) == "table" then
 			Runtime.IsDeadInLobby = (myData.Dead == true)
-		else
-			Runtime.IsDeadInLobby = true
 		end
 
 		for plrName, data in pairs(playerData) do
@@ -427,10 +428,10 @@ end
 
 local function GetActiveMap()
 	local _, map = GetActiveCoinContainer()
-	if map then return map end
+	if map and map.Parent then return map end
 	for _, obj in ipairs(Workspace:GetChildren()) do
 		if (obj:IsA("Model") or obj:IsA("Folder")) and obj.Name ~= "Lobby" then
-			if obj:FindFirstChild("Spawns") or obj:FindFirstChild("Map") then
+			if obj:FindFirstChild("Spawns") or obj:FindFirstChild("CoinContainer") or obj:FindFirstChild("Map") then
 				return obj
 			end
 		end
@@ -438,58 +439,81 @@ local function GetActiveMap()
 	return nil
 end
 
--- Vérifie si le joueur local est réellement dans la carte de la manche (et PAS au Lobby)
-local function IsLocalPlayerInActiveRound(coinContainer, localHRP)
-	if not coinContainer or not coinContainer.Parent or not localHRP then
-		return false
-	end
-
-	if Runtime.IsDeadInLobby then
-		return false
-	end
+-- Détecte si le joueur est sur la carte active (y compris pendant les 10s avant le début de la partie)
+local function IsLocalPlayerOnActiveMap(localHRP)
+	if not localHRP then return false, nil end
 
 	local lobby = Workspace:FindFirstChild("Lobby")
 	if lobby then
 		local lobbySpawn = lobby:FindFirstChildWhichIsA("SpawnLocation", true)
 			or lobby:FindFirstChildWhichIsA("BasePart", true)
-		if lobbySpawn and (localHRP.Position - lobbySpawn.Position).Magnitude < 135 then
-			return false
+		if lobbySpawn then
+			local horizLobbyDist = (Vector3.new(localHRP.Position.X, lobbySpawn.Position.Y, localHRP.Position.Z) - lobbySpawn.Position).Magnitude
+			if horizLobbyDist < 135 then
+				return false, nil
+			end
 		end
 	end
 
-	local map = coinContainer.Parent
-	local spawns = map and map:FindFirstChild("Spawns")
+	local map = GetActiveMap()
+	if not map then
+		return false, nil
+	end
+
+	local spawns = map:FindFirstChild("Spawns")
 	if spawns then
 		local spawnList = spawns:GetChildren()
 		if #spawnList > 0 then
 			local minSpawnDist = math.huge
+			local lowestSpawnY = math.huge
 			for _, sp in ipairs(spawnList) do
 				if sp:IsA("BasePart") then
 					local d = (Vector3.new(localHRP.Position.X, sp.Position.Y, localHRP.Position.Z) - sp.Position).Magnitude
 					if d < minSpawnDist then
 						minSpawnDist = d
 					end
+					if sp.Position.Y < lowestSpawnY then
+						lowestSpawnY = sp.Position.Y
+					end
 				end
 			end
-			if minSpawnDist > 260 then
-				return false
+			if minSpawnDist <= 280 then
+				Runtime.IsDeadInLobby = false
+				return true, (lowestSpawnY ~= math.huge and lowestSpawnY or localHRP.Position.Y)
+			else
+				return false, nil
 			end
 		end
 	end
 
-	local children = coinContainer:GetChildren()
-	if #children > 0 then
-		local firstItem = children[1]
-		local part = firstItem:IsA("BasePart") and firstItem or firstItem:FindFirstChildWhichIsA("BasePart")
-		if part then
-			local horizDist = (Vector3.new(localHRP.Position.X, part.Position.Y, localHRP.Position.Z) - part.Position).Magnitude
-			if horizDist > 280 then
-				return false
+	local cc = map:FindFirstChild("CoinContainer")
+	if cc then
+		local children = cc:GetChildren()
+		if #children > 0 then
+			local firstItem = children[1]
+			local part = firstItem:IsA("BasePart") and firstItem or firstItem:FindFirstChildWhichIsA("BasePart")
+			if part then
+				local horizDist = (Vector3.new(localHRP.Position.X, part.Position.Y, localHRP.Position.Z) - part.Position).Magnitude
+				if horizDist <= 280 then
+					Runtime.IsDeadInLobby = false
+					return true, part.Position.Y
+				else
+					return false, nil
+				end
 			end
 		end
 	end
 
-	return true
+	local anyPart = map:FindFirstChildWhichIsA("BasePart", true)
+	if anyPart then
+		local horizDist = (Vector3.new(localHRP.Position.X, anyPart.Position.Y, localHRP.Position.Z) - anyPart.Position).Magnitude
+		if horizDist <= 280 then
+			Runtime.IsDeadInLobby = false
+			return true, anyPart.Position.Y
+		end
+	end
+
+	return false, nil
 end
 
 local function FindGunDrop()
@@ -535,7 +559,9 @@ AddConnection(LocalPlayer.CharacterAdded, function()
 	Runtime.IsDeadInLobby = true
 	Runtime.IsFlinging = false
 	Runtime.PreFlingCFrame = nil
+	Runtime.CurrentMapFloorY = nil
 	Runtime.EmoteNeedsRefresh = true
+	Runtime.AimbotLocked = false
 end)
 
 -- Prédiction ultra-vive : anticipe instantanément les joueurs en mouvement (course + saut)
@@ -2096,7 +2122,6 @@ local function CreateKeybind(parent, text, defaultKeyName, _unusedLock, onTrigge
 	end)
 
 	AddConnection(UserInputService.InputBegan, function(input)
-		-- Enregistrement d'une nouvelle touche quand on a cliqué sur le bouton
 		if binding then
 			if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
 				if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
@@ -2118,7 +2143,6 @@ local function CreateKeybind(parent, text, defaultKeyName, _unusedLock, onTrigge
 			return
 		end
 
-		-- Déclenchement de la touche (ignore gameProcessed pour que R, E, F, C, etc. fonctionnent toujours hors chat)
 		if not UserInputService:GetFocusedTextBox() and input.UserInputType == Enum.UserInputType.Keyboard then
 			if currentKey ~= "None" and string.upper(input.KeyCode.Name) == string.upper(tostring(currentKey)) then
 				if onTrigger then
@@ -2217,7 +2241,7 @@ local TabSettings = CreateTab("Settings", "🔧", 8)
 SwitchTab("Main")
 
 --==============================================================================
--- 8. MOTEUR FLING + SHÉRIF HARMONY (SHOOT MURDERER + FLICK + SILENT AIM)
+-- 8. MOTEUR FLING + SHÉRIF HARMONY (SHOOT MURDERER + FLICK + AIMBOT LOCK + SILENT AIM)
 --==============================================================================
 
 local function CleanFarmPhysics(forceClean)
@@ -2407,7 +2431,7 @@ local function TeleportToActiveMap()
 end
 
 --------------------------------------------------------------------------------
--- MÉCANIQUE ULTRA-VIVE DU SHOOT MURDERER (Q) & SILENT AIM (INTACTE)
+-- MÉCANIQUE ULTRA-VIVE DU SHOOT MURDERER (Q), AIMBOT LOCK & SILENT AIM
 --------------------------------------------------------------------------------
 local function DispatchMM2GunRemotes(gunTool, targetPos, targetCF)
 	if not gunTool or not targetPos then return end
@@ -2566,7 +2590,6 @@ local function PerformCameraFlickShot()
 
 	local targetPos, targetCF = GetMurdererTargetData(targetPlr)
 	if targetPos then
-		localHRP.CFrame = CFrame.lookAt(localHRP.Position, Vector3.new(targetPos.X, localHRP.Position.Y, targetPos.Z))
 		cam.CFrame = CFrame.lookAt(cam.CFrame.Position, targetPos)
 		DispatchMM2GunRemotes(gun, targetPos, targetCF)
 		pcall(function()
@@ -2595,9 +2618,36 @@ local function PerformCameraFlickShot()
 	end)
 end
 
+-- BOUCLE RENDERSTEPPED : AIMBOT CAMERA LOCK CONTINU SUR LE MURDERER (SANS TOURNER LE PERSONNAGE)
+AddConnection(RunService.RenderStepped, function()
+	if not Runtime.AimbotLocked then return end
+
+	if not IsAlive(LocalPlayer) then
+		Runtime.AimbotLocked = false
+		return
+	end
+
+	local murd = GetMurdererInstant()
+	if not murd or murd == LocalPlayer or not IsAlive(murd) then
+		Runtime.AimbotLocked = false
+		return
+	end
+
+	local cam = Workspace.CurrentCamera
+	local targetPos = GetMurdererTargetData(murd)
+	if cam and targetPos then
+		-- Tourne uniquement la caméra vers le Murderer ; le personnage garde sa rotation naturelle de marche
+		cam.CFrame = CFrame.lookAt(cam.CFrame.Position, targetPos)
+	end
+end)
+
 --------------------------------------------------------------------------------
--- SILENT AIM 100% HIT : PRIORITÉ LIFO INSTANTANÉE + RAFALE HAUTE FRÉQUENCE (INTACT)
+-- SILENT AIM 100% HIT : ACTIF AUTOMATIQUEMENT AUSSI QUAND L'AIMBOT CAM EST LOCK !
 --------------------------------------------------------------------------------
+local function IsSilentOrAimbotActive()
+	return Config.SilentAim or Runtime.AimbotLocked
+end
+
 local function DisconnectSilentAimHooks()
 	if Runtime.SilentAimGunConn then
 		pcall(function() Runtime.SilentAimGunConn:Disconnect() end)
@@ -2610,7 +2660,7 @@ local function DisconnectSilentAimHooks()
 end
 
 local function FireSilentAimInstant(gun, remote)
-	if not Config.SilentAim then return end
+	if not IsSilentOrAimbotActive() then return end
 	local murderer = GetMurdererInstant()
 	if not murderer or murderer == LocalPlayer or not IsAlive(murderer) then return end
 
@@ -2628,7 +2678,7 @@ local function FireSilentAimInstant(gun, remote)
 	DispatchMM2GunRemotes(gun, targetPos, targetCF)
 	for _, delayTime in ipairs({0.01, 0.03, 0.06, 0.10}) do
 		task.delay(delayTime, function()
-			if Config.SilentAim and gun and gun.Parent == GetCharacter(LocalPlayer) then
+			if IsSilentOrAimbotActive() and gun and gun.Parent == GetCharacter(LocalPlayer) then
 				local m = GetMurdererInstant()
 				if m and IsAlive(m) then
 					local p, cf = GetMurdererTargetData(m)
@@ -2649,7 +2699,7 @@ local function FireSilentAimInstant(gun, remote)
 end
 
 local function RebindSilentAimLIFO(gun)
-	if not Config.SilentAim or not gun then
+	if not IsSilentOrAimbotActive() or not gun then
 		DisconnectSilentAimHooks()
 		return
 	end
@@ -2700,7 +2750,7 @@ task.spawn(function()
 		end
 
 		local char = GetCharacter(LocalPlayer)
-		if Config.SilentAim and char and gun and gun.Parent == char then
+		if IsSilentOrAimbotActive() and char and gun and gun.Parent == char then
 			RebindSilentAimLIFO(gun)
 		else
 			DisconnectSilentAimHooks()
@@ -2716,7 +2766,7 @@ pcall(function()
 		local oldNamecall
 		oldNamecall = hookmetamethod(game, "__namecall", wrapClosure(function(self, ...)
 			local method = (type(getnamecallmethod) == "function") and getnamecallmethod() or ""
-			if Config.SilentAim and (method == "InvokeServer" or method == "FireServer") then
+			if IsSilentOrAimbotActive() and (method == "InvokeServer" or method == "FireServer") then
 				if self.Name == "RemoteFunction" or self.Name == "ShootGun" or self.Name == "Shoot" then
 					local murd = GetMurdererInstant()
 					if murd and IsAlive(murd) then
@@ -2916,7 +2966,7 @@ CreateToggle(TabMisc, "Auto Emote", Config.AutoEmote, false, function(val)
 end)
 
 --------------------------------------------------------------------------------
--- 4. ONGLET ROLES (MURDERER & SHÉRIF + FLICK SHOOT CAM)
+-- 4. ONGLET ROLES (MURDERER & SHÉRIF + AIMBOT LOCK CAM)
 --------------------------------------------------------------------------------
 
 CreateToggle(TabRoles, "Kill Aura", Config.KillAura, false, function(val)
@@ -2935,7 +2985,7 @@ CreateSeparator(TabRoles)
 
 CreateToggle(TabRoles, "Silent Aim", Config.SilentAim, false, function(val)
 	Config.SilentAim = val
-	if val then
+	if IsSilentOrAimbotActive() then
 		local gun = GetMM2Tool(LocalPlayer, "Gun")
 		if gun then
 			RebindSilentAimLIFO(gun)
@@ -2968,6 +3018,27 @@ CreateKeybind(TabRoles, "Flick Shoot (Cam)", Config.FlickShootKey, false, functi
 	PerformCameraFlickShot()
 end, function(newKey)
 	Config.FlickShootKey = newKey
+end)
+
+-- Aimbot Lock (Cam) — Verrouille uniquement la caméra en continu sur le Murderer + Active le 100% Hit dès qu'on tire
+CreateKeybind(TabRoles, "Aimbot Lock (Cam)", Config.AimbotLockKey, false, function()
+	if Runtime.AimbotLocked then
+		Runtime.AimbotLocked = false
+		if not Config.SilentAim then
+			DisconnectSilentAimHooks()
+		end
+	else
+		local murd = GetMurdererInstant()
+		if murd and IsAlive(murd) then
+			Runtime.AimbotLocked = true
+			local gun = GetMM2Tool(LocalPlayer, "Gun")
+			if gun then
+				RebindSilentAimLIFO(gun)
+			end
+		end
+	end
+end, function(newKey)
+	Config.AimbotLockKey = newKey
 end)
 
 --------------------------------------------------------------------------------
@@ -3325,6 +3396,7 @@ CreateButton(TabSettings, "Execute Command", function()
 			hum.Health = 0
 		end
 	elseif cmd == "Fix Camera" then
+		Runtime.AimbotLocked = false
 		local cam = Workspace.CurrentCamera
 		local hum = GetHumanoid(LocalPlayer)
 		if cam and hum then
@@ -3345,6 +3417,7 @@ CreateButton(TabSettings, "Execute Command", function()
 		end
 	elseif cmd == "Destroy GUI" then
 		Config.SilentAim = false
+		Runtime.AimbotLocked = false
 		DisconnectSilentAimHooks()
 		CleanFarmPhysics(true)
 		StopFlingPhysics()
@@ -3481,7 +3554,7 @@ AddConnection(RunService.Heartbeat, function()
 end)
 
 --------------------------------------------------------------------------------
--- BOUCLE DÉDIÉE : AUTO FARM 24 STUDS/S + ATTENTE AU LOBBY SI HORS PARTIE
+-- BOUCLE DÉDIÉE : AUTO FARM 24 STUDS/S (ATTENTE SOUS LA MAP PENDANT LES 10S + REMONTÉE SOUS LA PIÈCE)
 --------------------------------------------------------------------------------
 
 local function IsCoinActive(item, visualPart)
@@ -3581,7 +3654,7 @@ local function SelectTargetCoin(coins, localHRP)
 		local bestDist = math.huge
 		local chosen = nil
 		for _, entry in ipairs(coins) do
-			local d = (entry.Position - localHRP.Position).Magnitude
+			local d = Vector3.new(entry.Position.X - localHRP.Position.X, 0, entry.Position.Z - localHRP.Position.Z).Magnitude
 			if d < bestDist then
 				bestDist = d
 				chosen = entry
@@ -3591,18 +3664,86 @@ local function SelectTargetCoin(coins, localHRP)
 	end
 end
 
+-- Helper de Tween linéaire à vitesse constante de 24 studs/s
+local function TweenRootAtSpeed(localHRP, targetCF, speed, coinContainer, checkCoinEntry, checkAvoidMurd, coinsCount)
+	local dist = (targetCF.Position - localHRP.Position).Magnitude
+	if dist < 0.15 then
+		localHRP.CFrame = targetCF
+		return false
+	end
+
+	local duration = math.max(dist / speed, 0.04)
+	local tween = TweenService:Create(
+		localHRP,
+		TweenInfo.new(duration, Enum.EasingStyle.Linear),
+		{ CFrame = targetCF }
+	)
+	Runtime.ActiveTween = tween
+	tween:Play()
+
+	local startWait = os.clock()
+	local abortedForMurderer = false
+
+	while Config.AutoFarm
+		and not Runtime.IsFlinging
+		and IsAlive(LocalPlayer)
+		and not Runtime.BagIsFull
+		and (os.clock() - startWait) < duration
+	do
+		local onMap = IsLocalPlayerOnActiveMap(localHRP)
+		if not onMap then
+			break
+		end
+
+		if checkCoinEntry and not IsCoinActive(checkCoinEntry.ContainerItem, checkCoinEntry.VisualPart) then
+			break
+		end
+
+		if checkAvoidMurd and Config.AvoidMurderer and checkCoinEntry then
+			local murd = Runtime.MurdererPlayer
+			local murdHRP = (murd and murd ~= LocalPlayer and IsAlive(murd)) and GetRootPart(murd) or nil
+			if murdHRP and (murdHRP.Position - checkCoinEntry.Position).Magnitude < 24 and (coinsCount or 0) > 1 then
+				abortedForMurderer = true
+				break
+			end
+		end
+
+		if checkCoinEntry and (localHRP.Position - checkCoinEntry.Position).Magnitude <= 3.6 then
+			if type(fireTouch) == "function" then
+				pcall(function()
+					fireTouch(localHRP, checkCoinEntry.TouchPart, 0)
+					fireTouch(localHRP, checkCoinEntry.TouchPart, 1)
+				end)
+			end
+		end
+
+		task.wait(0.03)
+	end
+
+	if tween then
+		pcall(function() tween:Cancel() end)
+	end
+
+	return abortedForMurderer
+end
+
 task.spawn(function()
 	local HARMONY_FARM_SPEED = 24
 	local undergroundRotation = CFrame.Angles(math.rad(90), 0, 0)
-	local undergroundDepth = 2.8
+	local travelDepthBelowCoin = 5.5
+	local pickupDepthBelowCoin = 1.6
 
 	while ScreenGui.Parent do
 		if Config.AutoFarm and not Runtime.IsFlinging and IsAlive(LocalPlayer) then
-			local coinContainer = GetActiveCoinContainer()
 			local localHRP = GetRootPart(LocalPlayer)
 			local localHum = GetHumanoid(LocalPlayer)
+			local onActiveMap, detectedFloorY = IsLocalPlayerOnActiveMap(localHRP)
 
-			if coinContainer and localHRP and localHum and IsLocalPlayerInActiveRound(coinContainer, localHRP) then
+			if localHRP and localHum and onActiveMap then
+				if detectedFloorY then
+					Runtime.CurrentMapFloorY = detectedFloorY
+				end
+
 				if Runtime.BagIsFull then
 					CleanFarmPhysics()
 					if Config.ResetWhenFull then
@@ -3618,7 +3759,7 @@ task.spawn(function()
 							TeleportToActiveMap()
 						end
 					end
-					task.wait(0.4)
+					task.wait(0.35)
 				else
 					Runtime.HasResetThisRound = false
 					Runtime.HasReturnedToMapThisRound = false
@@ -3638,120 +3779,83 @@ task.spawn(function()
 
 					localHum.PlatformStand = true
 
+					local coinContainer = GetActiveCoinContainer()
 					local coins = GetValidCoinsList(coinContainer)
 					local chosenEntry = SelectTargetCoin(coins, localHRP)
 
 					if chosenEntry and IsCoinActive(chosenEntry.ContainerItem, chosenEntry.VisualPart) then
 						local coinPos = chosenEntry.TouchPart.Position
-						local targetUnderCF = CFrame.new(coinPos.X, coinPos.Y - undergroundDepth, coinPos.Z) * undergroundRotation
 
-						if math.abs(localHRP.Position.Y - (coinPos.Y - undergroundDepth)) > 6 then
-							local divePos = Vector3.new(localHRP.Position.X, coinPos.Y - undergroundDepth, localHRP.Position.Z)
-							local diveDist = (divePos - localHRP.Position).Magnitude
-							local diveTime = math.max(diveDist / HARMONY_FARM_SPEED, 0.05)
-							local diveTween = TweenService:Create(
-								localHRP,
-								TweenInfo.new(diveTime, Enum.EasingStyle.Linear),
-								{ CFrame = CFrame.new(divePos) * undergroundRotation }
-							)
-							Runtime.ActiveTween = diveTween
-							diveTween:Play()
-							local diveStart = os.clock()
-							while Config.AutoFarm
-								and not Runtime.IsFlinging
-								and IsAlive(LocalPlayer)
-								and not Runtime.BagIsFull
-								and IsLocalPlayerInActiveRound(coinContainer, localHRP)
-								and (os.clock() - diveStart) < diveTime
-							do
-								task.wait(0.04)
-							end
+						local safeCruiseY = math.min(localHRP.Position.Y, coinPos.Y - travelDepthBelowCoin)
+						if localHRP.Position.Y > (coinPos.Y - 2.0) then
+							safeCruiseY = coinPos.Y - travelDepthBelowCoin
+							local initialDiveCF = CFrame.new(localHRP.Position.X, safeCruiseY, localHRP.Position.Z) * undergroundRotation
+							TweenRootAtSpeed(localHRP, initialDiveCF, HARMONY_FARM_SPEED, coinContainer, nil, false, #coins)
 						end
 
-						local distance = (targetUnderCF.Position - localHRP.Position).Magnitude
-						local duration = math.max(distance / HARMONY_FARM_SPEED, 0.05)
+						-- ÉTAPE 1 : Se dirige HORIZONTALEMENT sous la carte jusqu'à être exactement EN DESSOUS de la pièce
+						local underCoinCF = CFrame.new(coinPos.X, safeCruiseY, coinPos.Z) * undergroundRotation
+						local aborted = TweenRootAtSpeed(localHRP, underCoinCF, HARMONY_FARM_SPEED, coinContainer, chosenEntry, true, #coins)
 
-						local tween = TweenService:Create(
-							localHRP,
-							TweenInfo.new(duration, Enum.EasingStyle.Linear),
-							{ CFrame = targetUnderCF }
-						)
-						Runtime.ActiveTween = tween
-						tween:Play()
+						if aborted then
+							Runtime.VisitedCoins[chosenEntry.ContainerItem] = true
+						elseif Config.AutoFarm and not Runtime.IsFlinging and not Runtime.BagIsFull and IsCoinActive(chosenEntry.ContainerItem, chosenEntry.VisualPart) then
+							-- ÉTAPE 2 : Monte verticalement sous la pièce pour la récupérer
+							local collectCF = CFrame.new(coinPos.X, coinPos.Y - pickupDepthBelowCoin, coinPos.Z) * undergroundRotation
+							TweenRootAtSpeed(localHRP, collectCF, HARMONY_FARM_SPEED, coinContainer, chosenEntry, false, #coins)
 
-						local startWait = os.clock()
-						local abortedForMurderer = false
-
-						while Config.AutoFarm
-							and not Runtime.IsFlinging
-							and IsAlive(LocalPlayer)
-							and not Runtime.BagIsFull
-							and IsLocalPlayerInActiveRound(coinContainer, localHRP)
-							and IsCoinActive(chosenEntry.ContainerItem, chosenEntry.VisualPart)
-							and (os.clock() - startWait) < duration
-						do
-							if Config.AvoidMurderer then
-								local murd = Runtime.MurdererPlayer
-								local murdHRP = (murd and murd ~= LocalPlayer and IsAlive(murd)) and GetRootPart(murd) or nil
-								if murdHRP and (murdHRP.Position - coinPos).Magnitude < 24 and #coins > 1 then
-									abortedForMurderer = true
-									break
-								end
-							end
-
-							if (localHRP.Position - targetUnderCF.Position).Magnitude <= 3.2 then
-								if type(fireTouch) == "function" then
-									pcall(function()
+							if Config.AutoFarm and not Runtime.BagIsFull and IsCoinActive(chosenEntry.ContainerItem, chosenEntry.VisualPart) and localHRP then
+								pcall(function()
+									if type(fireTouch) == "function" then
 										fireTouch(localHRP, chosenEntry.TouchPart, 0)
 										fireTouch(localHRP, chosenEntry.TouchPart, 1)
-									end)
-								end
+									else
+										chosenEntry.TouchPart.CanCollide = false
+										chosenEntry.TouchPart.CFrame = localHRP.CFrame
+									end
+								end)
+								Runtime.CoinsCollectedSession += 1
 							end
-							task.wait(0.04)
-						end
 
-						if tween then
-							pcall(function() tween:Cancel() end)
-						end
+							Runtime.VisitedCoins[chosenEntry.ContainerItem] = true
 
-						if abortedForMurderer then
-							Runtime.VisitedCoins[chosenEntry.ContainerItem] = true
-						elseif Config.AutoFarm and not Runtime.IsFlinging and not Runtime.BagIsFull and IsCoinActive(chosenEntry.ContainerItem, chosenEntry.VisualPart) and localHRP then
-							pcall(function()
-								if type(fireTouch) == "function" then
-									fireTouch(localHRP, chosenEntry.TouchPart, 0)
-									fireTouch(localHRP, chosenEntry.TouchPart, 1)
-								else
-									chosenEntry.TouchPart.CanCollide = false
-									chosenEntry.TouchPart.CFrame = localHRP.CFrame
-								end
-							end)
-							Runtime.VisitedCoins[chosenEntry.ContainerItem] = true
-							Runtime.CoinsCollectedSession += 1
-							task.wait(0.04)
+							-- ÉTAPE 3 : Redescend immédiatement sous la carte
+							local postCollectDownCF = CFrame.new(coinPos.X, coinPos.Y - travelDepthBelowCoin, coinPos.Z) * undergroundRotation
+							TweenRootAtSpeed(localHRP, postCollectDownCF, HARMONY_FARM_SPEED, coinContainer, nil, false, #coins)
 						else
 							Runtime.VisitedCoins[chosenEntry.ContainerItem] = true
 						end
 					else
+						-- DÉBUT DE PARTIE (pendant les 10s avant les pièces) : plonge sous la map en attendant
 						table.clear(Runtime.VisitedCoins)
-						task.wait(0.2)
+						local baseFloorY = Runtime.CurrentMapFloorY or localHRP.Position.Y
+						local waitUnderY = baseFloorY - travelDepthBelowCoin
+						if localHRP.Position.Y > waitUnderY + 1.0 then
+							local hideUnderCF = CFrame.new(localHRP.Position.X, waitUnderY, localHRP.Position.Z) * undergroundRotation
+							TweenRootAtSpeed(localHRP, hideUnderCF, HARMONY_FARM_SPEED, coinContainer, nil, false, 0)
+						else
+							localHRP.CFrame = CFrame.new(localHRP.Position.X, localHRP.Position.Y, localHRP.Position.Z) * undergroundRotation
+						end
+						task.wait(0.08)
 					end
 				end
 			else
+				local coinContainer = GetActiveCoinContainer()
 				if not coinContainer or not coinContainer.Parent then
 					Runtime.BagIsFull = false
 					Runtime.HasResetThisRound = false
 					Runtime.HasReturnedToMapThisRound = false
+					Runtime.CurrentMapFloorY = nil
 				end
 				CleanFarmPhysics()
 				table.clear(Runtime.VisitedCoins)
-				task.wait(0.35)
+				task.wait(0.25)
 			end
 		else
 			CleanFarmPhysics()
 			task.wait(0.25)
 		end
-		task.wait(0.04)
+		task.wait(0.03)
 	end
 end)
 
